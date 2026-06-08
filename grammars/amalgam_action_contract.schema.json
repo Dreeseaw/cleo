@@ -1,0 +1,791 @@
+{
+  "$id": "https://cothogonal.local/schemas/amalgam_action_contract_v1_primitive_engine.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Canonical bounded action object for the in-process GBNF action runtime.",
+  "oneOf": [
+    {
+      "additionalProperties": false,
+      "properties": {
+        "args": {
+          "additionalProperties": false,
+          "properties": {
+            "include_columns": {
+              "type": "boolean"
+            },
+            "include_relationships": {
+              "type": "boolean"
+            },
+            "max_columns_per_table": {
+              "maximum": 500,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "max_tables": {
+              "maximum": 500,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "tables": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [],
+          "type": "object"
+        },
+        "tool": {
+          "const": "inspect_schema"
+        },
+        "type": {
+          "const": "tool_call"
+        }
+      },
+      "required": [
+        "type",
+        "tool",
+        "args"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "args": {
+          "additionalProperties": false,
+          "properties": {
+            "allow_value_examples": {
+              "type": "boolean"
+            },
+            "columns": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "max_exact_distinct": {
+              "maximum": 1000000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "table": {
+              "type": "string"
+            },
+            "top_values_limit": {
+              "maximum": 100,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "table"
+          ],
+          "type": "object"
+        },
+        "tool": {
+          "const": "profile_columns"
+        },
+        "type": {
+          "const": "tool_call"
+        }
+      },
+      "required": [
+        "type",
+        "tool",
+        "args"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "args": {
+          "additionalProperties": false,
+          "properties": {
+            "columns": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "limit": {
+              "maximum": 100,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "method": {
+              "type": "string"
+            },
+            "table": {
+              "type": "string"
+            },
+            "where_sql": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "table"
+          ],
+          "type": "object"
+        },
+        "tool": {
+          "const": "sample"
+        },
+        "type": {
+          "const": "tool_call"
+        }
+      },
+      "required": [
+        "type",
+        "tool",
+        "args"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "args": {
+          "additionalProperties": false,
+          "properties": {
+            "current_gold_sql": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "db_id": {
+              "type": "string"
+            },
+            "k": {
+              "maximum": 10,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "question": {
+              "type": "string"
+            },
+            "schema_scope": {
+              "type": "string"
+            },
+            "similarity_cap": {
+              "maximum": 1.0,
+              "minimum": 0.0,
+              "type": "number"
+            },
+            "source": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "question"
+          ],
+          "type": "object"
+        },
+        "tool": {
+          "const": "retrieve_exemplars"
+        },
+        "type": {
+          "const": "tool_call"
+        }
+      },
+      "required": [
+        "type",
+        "tool",
+        "args"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "args": {
+          "additionalProperties": false,
+          "properties": {
+            "purpose": {
+              "type": "string"
+            },
+            "row_limit": {
+              "maximum": 1000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "sql": {
+              "type": "string"
+            },
+            "timeout_ms": {
+              "maximum": 60000,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "sql"
+          ],
+          "type": "object"
+        },
+        "tool": {
+          "const": "exec_sql"
+        },
+        "type": {
+          "const": "tool_call"
+        }
+      },
+      "required": [
+        "type",
+        "tool",
+        "args"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "args": {
+          "additionalProperties": false,
+          "properties": {
+            "allow_long_lived_raw": {
+              "type": "boolean"
+            },
+            "catalog_hash": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "key": {
+              "type": "string"
+            },
+            "overwrite": {
+              "type": "boolean"
+            },
+            "profile_hash": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "scope": {
+              "type": "string"
+            },
+            "ttl_turns": {
+              "maximum": 1000000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "value": true,
+            "visibility": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "key",
+            "value"
+          ],
+          "type": "object"
+        },
+        "tool": {
+          "const": "file_store"
+        },
+        "type": {
+          "const": "tool_call"
+        }
+      },
+      "required": [
+        "type",
+        "tool",
+        "args"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "args": {
+          "additionalProperties": false,
+          "properties": {
+            "catalog_hash": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "key": {
+              "type": "string"
+            },
+            "max_bytes": {
+              "maximum": 262144,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "profile_hash": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "scope": {
+              "type": "string"
+            },
+            "version": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "key"
+          ],
+          "type": "object"
+        },
+        "tool": {
+          "const": "file_read"
+        },
+        "type": {
+          "const": "tool_call"
+        }
+      },
+      "required": [
+        "type",
+        "tool",
+        "args"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "args": {
+          "additionalProperties": false,
+          "properties": {
+            "catalog_hash": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "include_values": {
+              "type": "boolean"
+            },
+            "limit": {
+              "maximum": 500,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "prefix": {
+              "type": "string"
+            },
+            "scope": {
+              "type": "string"
+            }
+          },
+          "required": [],
+          "type": "object"
+        },
+        "tool": {
+          "const": "file_list"
+        },
+        "type": {
+          "const": "tool_call"
+        }
+      },
+      "required": [
+        "type",
+        "tool",
+        "args"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "args": {
+          "additionalProperties": false,
+          "properties": {
+            "missing_slots": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "question": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "question"
+          ],
+          "type": "object"
+        },
+        "tool": {
+          "const": "ask_clarification"
+        },
+        "type": {
+          "const": "tool_call"
+        }
+      },
+      "required": [
+        "type",
+        "tool",
+        "args"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "args": {
+          "additionalProperties": false,
+          "properties": {
+            "candidate_sql": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "question": {
+              "type": "string"
+            },
+            "required_columns": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "required_tables": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "question"
+          ],
+          "type": "object"
+        },
+        "tool": {
+          "const": "answerability_probe"
+        },
+        "type": {
+          "const": "tool_call"
+        }
+      },
+      "required": [
+        "type",
+        "tool",
+        "args"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "args": {
+          "additionalProperties": false,
+          "properties": {
+            "include_columns": {
+              "type": "boolean"
+            }
+          },
+          "required": [],
+          "type": "object"
+        },
+        "tool": {
+          "const": "schema_catalog"
+        },
+        "type": {
+          "const": "tool_call"
+        }
+      },
+      "required": [
+        "type",
+        "tool",
+        "args"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "args": {
+          "additionalProperties": false,
+          "properties": {
+            "table": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "table"
+          ],
+          "type": "object"
+        },
+        "tool": {
+          "const": "table_profile"
+        },
+        "type": {
+          "const": "tool_call"
+        }
+      },
+      "required": [
+        "type",
+        "tool",
+        "args"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "args": {
+          "additionalProperties": false,
+          "properties": {
+            "columns": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "limit": {
+              "maximum": 100,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "table": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "table"
+          ],
+          "type": "object"
+        },
+        "tool": {
+          "const": "sample_rows"
+        },
+        "type": {
+          "const": "tool_call"
+        }
+      },
+      "required": [
+        "type",
+        "tool",
+        "args"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "args": {
+          "additionalProperties": false,
+          "properties": {
+            "end_table": {
+              "type": "string"
+            },
+            "max_hops": {
+              "maximum": 8,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "max_paths": {
+              "maximum": 50,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "start_table": {
+              "type": "string"
+            }
+          },
+          "required": [],
+          "type": "object"
+        },
+        "tool": {
+          "const": "find_join_paths"
+        },
+        "type": {
+          "const": "tool_call"
+        }
+      },
+      "required": [
+        "type",
+        "tool",
+        "args"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "args": {
+          "additionalProperties": false,
+          "properties": {
+            "params": true,
+            "pattern": {
+              "type": "string"
+            },
+            "table": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "pattern",
+            "table"
+          ],
+          "type": "object"
+        },
+        "tool": {
+          "const": "aggregate_window_template"
+        },
+        "type": {
+          "const": "tool_call"
+        }
+      },
+      "required": [
+        "type",
+        "tool",
+        "args"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "args": {
+          "additionalProperties": false,
+          "properties": {
+            "sql": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "sql"
+          ],
+          "type": "object"
+        },
+        "tool": {
+          "const": "explain_plan"
+        },
+        "type": {
+          "const": "tool_call"
+        }
+      },
+      "required": [
+        "type",
+        "tool",
+        "args"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "args": {
+          "additionalProperties": false,
+          "properties": {
+            "intent": {
+              "type": "string"
+            },
+            "max_rows": {
+              "maximum": 500,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "result_schema": true,
+            "rows": true
+          },
+          "required": [
+            "result_schema",
+            "rows"
+          ],
+          "type": "object"
+        },
+        "tool": {
+          "const": "result_to_chart_spec"
+        },
+        "type": {
+          "const": "tool_call"
+        }
+      },
+      "required": [
+        "type",
+        "tool",
+        "args"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "sql": {
+          "pattern": "^\\s*(?:SELECT|WITH)\\b",
+          "type": "string"
+        },
+        "type": {
+          "const": "sql"
+        }
+      },
+      "required": [
+        "type",
+        "sql"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "question": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "type": {
+          "const": "clarification"
+        }
+      },
+      "required": [
+        "type",
+        "question"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "answer": {
+          "type": "string"
+        },
+        "chart_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "confidence": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "type": "number"
+        },
+        "sql_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "type": {
+          "const": "final_answer"
+        }
+      },
+      "required": [
+        "type",
+        "answer"
+      ],
+      "type": "object"
+    }
+  ],
+  "title": "AMALGAM Analytic Action"
+}

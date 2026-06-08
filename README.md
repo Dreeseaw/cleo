@@ -1,23 +1,33 @@
 # Cleo
 
-A small (~2B) **analyst-SQL** model — turns a database **schema + question** into a read-only
-SQL query, or an honest **clarification** when the request is ambiguous/unsafe/out-of-schema.
-Personal research project.
+A small (~2B) **analyst-SQL** model + a thin **harness** — turns a database **schema + question**
+into a read-only SQL query, or an honest **clarification** when the request is
+ambiguous/unsafe/out-of-schema. Personal research project.
 
 - Output is strict JSON, exactly one key: `{"sql": "..."}` or `{"clarification": "..."}`.
-- Inference-only. The model is *not* trained on tool-call trajectories — only
-  (schema + question → final answer). Grounding/execution is the harness's job.
+- The model is *not* trained on tool-call trajectories — only (schema + question → final answer).
+  Grounding/execution is the **harness's** job (`actionrt/`).
 
-**Code** lives here (GitHub). **Weights** live on Hugging Face: `dreeseaw/cleo` (private).
+**Code** lives here (GitHub). **Weights** (GGUF) live on Hugging Face: `dreeseaw/cleo` (private).
+
+## Two ways to run
+
+1. **One-shot** (`cleo_infer.py`) — single generation, schema+question → SQL/clarify. Simple, fast.
+2. **Full harness** (`run_harness_demo.py`) — the `actionrt` GBNF-constrained **agentic loop**
+   (gather/read/write primitives over DuckDB, grounding, fixed-mode fallback). This is the real
+   product. **Heads-up for v0.9:** the model was SFT'd on final answers, *not* on harness
+   rollouts, so it drives the multi-step loop clumsily (takes valid actions but often doesn't
+   converge to a final answer). That's expected for a pre-release — **RLVR-in-harness (v0.95) is
+   what teaches it to use the loop.** Use this to dogfood the plumbing.
 
 ## Lineage (v0.9)
 
 `Qwen3.5-2B-Base` → MSH3 SFT (LoRA→merged) → OPD on-policy distillation from a Qwen3.6-27B
-teacher (LoRA→merged) → **v0.9 amalgamation SFT** (LoRA→merged): a LLaVA-style ~53k-row mixture
-(capability packs + a 40k diverse leak-free SynSQL-2.5M slice + multi-turn/recovery +
+teacher (LoRA→merged) → **v0.9 amalgamation SFT** (LoRA→merged → GGUF): a LLaVA-style ~53k-row
+mixture (capability packs + a 40k diverse leak-free SynSQL-2.5M slice + multi-turn/recovery +
 abstain/clarify + grounding traces).
 
-### Results vs the prior champion (answerable-denotation accuracy)
+### Results vs the prior champion (one-shot, answerable-denotation accuracy)
 
 | suite | prior champion | **Cleo v0.9** |
 |---|---|---|
@@ -25,31 +35,32 @@ abstain/clarify + grounding traces).
 | **real_db_ood_v3 (OOD)** | 32/86 | **61/86** |
 | **in-dist canonical** | 19/99 | **59/99** |
 
-## Setup (Mac, inference-only — perf is not a priority)
+## Setup (Mac — fast via Metal)
 
 ```bash
 git clone https://github.com/Dreeseaw/cleo.git && cd cleo
-pip install "transformers>=5.3" torch duckdb sentencepiece huggingface_hub
-huggingface-cli login                         # access the private dreeseaw/cleo weights
-hf download dreeseaw/cleo --local-dir ./weights
-python cleo_infer.py --model ./weights \
+pip install -r requirements.txt          # llama-cpp-python builds with Metal on Mac
+huggingface-cli login                    # access the private dreeseaw/cleo weights
+hf download dreeseaw/cleo cleo_v0_9-no_mtp-Q4_K_M.gguf --local-dir ./weights
+
+# one-shot:
+python cleo_infer.py --model weights/cleo_v0_9-no_mtp-Q4_K_M.gguf \
   --schema "CREATE TABLE orders (id INT, customer_id INT, amount REAL, status TEXT); CREATE TABLE customers (id INT, name TEXT, country TEXT);" \
   --question "Total order amount for US customers, by status."
+
+# full agentic harness (demo DB; rough on v0.9 pre-RLVR — that's the point):
+PYTHONPATH=. python run_harness_demo.py --backend llama-cpp \
+  --model-path weights/cleo_v0_9-no_mtp-Q4_K_M.gguf --n-gpu-layers -1 --max-steps 6
 ```
 
-Expected:
+One-shot expected:
 ```json
 {"sql": "SELECT status, SUM(amount) AS total_amount FROM orders WHERE customer_id IN (SELECT id FROM customers WHERE country = 'US') GROUP BY status ORDER BY status;"}
 ```
 
-Execute the SQL too (read-only) by passing a DuckDB file:
-```bash
-python cleo_infer.py --model ./weights --schema-file schema.sql --question "..." --db mydata.duckdb
-```
-
 ## Notes
 
-- Runs on CUDA / Apple **MPS** / CPU. On Mac the linear-attention fast kernels
-  (`flash-linear-attention`) are CUDA-only → torch fallback (functional, just slower).
-- Architecture: `qwen3_5` (hybrid linear-attention); requires `transformers>=5.3`.
-- v0.9 is SFT only; an RLVR-tuned **v0.95** is planned.
+- `Q4_K_M` GGUF ≈ 1.27 GB. Runs on Mac (Metal, `n_gpu_layers=-1`), CUDA, or CPU (`0`).
+- Architecture: `qwen3_5` (hybrid linear-attention); the GGUF was converted with `--no-mtp`
+  (the MTP head isn't supported by llama.cpp's loader).
+- v0.9 is SFT only. **v0.95 = RLVR-in-harness** (teaches the agentic loop) — planned next.
