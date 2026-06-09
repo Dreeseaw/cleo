@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cleo-sql"
+version = "1.0.0"
+description = "A small tool-using SQL analyst that discovers real values in your database before answering."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "Apache-2.0" }
+dependencies = ["sqlglot>=20"]
+
+[project.optional-dependencies]
+gguf = ["llama-cpp-python>=0.3"]
+hf = ["torch", "transformers>=4.45", "huggingface_hub"]
+
+[project.urls]
+Homepage = "https://github.com/Dreeseaw/cleo"
+
+[tool.setuptools]
+packages = ["cleo"]

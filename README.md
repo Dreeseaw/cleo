@@ -4,8 +4,19 @@
 live DB to **discover real values/codes/conventions** before answering, instead of one-shot guessing.
 This is the lever that broke the value-discovery ceiling of v0.9.
 
-➡ **Current harness + run instructions: [`tooluse/`](tooluse/README.md).** Weights on HF
-`dreeseaw/cleo`: `cleo_v1_0-no_mtp-Q8_0.gguf` (recommended) and the bf16 model under `v1.0/`.
+**Use it as a Python package** — point it at your own DB connection, no server, no pre-staging:
+
+```python
+from cleo import Cleo
+cleo = Cleo.from_gguf("cleo_v1_0-no_mtp-Q8_0.gguf")   # or Cleo.from_hf("dreeseaw/cleo")
+ans  = cleo.ask("employees currently in each department?", conn)   # conn = any DB-API 2.0 connection
+ans.sql, ans.rows, ans.clarification, ans.discovered
+```
+
+`conn` is any `psycopg2` / `sqlite3` / `duckdb` / SQLAlchemy connection; every query is validated
+read-only and rolled back. Drop it into an MCP server (`examples/mcp_tool.py`) or a REPL. Package docs:
+[`cleo/`](cleo/) · [`pyproject.toml`](pyproject.toml). Weights on HF `dreeseaw/cleo`:
+`cleo_v1_0-no_mtp-Q8_0.gguf` (recommended) and the bf16 model under `v1.0/`.
 
 | suite | v0.9 (single-shot) | **v1.0 (tool-use)** |
 |---|---|---|
@@ -13,10 +24,8 @@ This is the lever that broke the value-discovery ceiling of v0.9.
 | general OOD (new DBs) | 59.3% | **64.2%** |
 
 Trained by **behavioral cloning on denotation-verified teacher trajectories** (no stored logits, ~$1.4
-teacher cost); Q8_0 GGUF preserves the deltas. Details in `tooluse/README.md`.
-
-The legacy one-shot `cleo_infer.py` and the `actionrt/` GBNF loop below are **superseded** by `tooluse/`
-but kept for the v0.9 lineage.
+teacher cost); Q8_0 GGUF preserves the deltas. The `tooluse/` training harness, legacy one-shot
+`cleo_infer.py`, and the `actionrt/` GBNF loop are kept for reference but superseded by the `cleo` package.
 
 ---
 
