@@ -4,3 +4,4 @@ transformers>=5.3
 torch
 sentencepiece
 huggingface_hub
+sqlglot

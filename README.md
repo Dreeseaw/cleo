@@ -1,3 +1,25 @@
+# Cleo v1.0 — tool-use SQL analyst (gather → discover values → answer)
+
+**v1.0 is here (2026-06-09).** Cleo now *uses tools*: it issues read-only `gather` probes against the
+live DB to **discover real values/codes/conventions** before answering, instead of one-shot guessing.
+This is the lever that broke the value-discovery ceiling of v0.9.
+
+➡ **Current harness + run instructions: [`tooluse/`](tooluse/README.md).** Weights on HF
+`dreeseaw/cleo`: `cleo_v1_0-no_mtp-Q8_0.gguf` (recommended) and the bf16 model under `v1.0/`.
+
+| suite | v0.9 (single-shot) | **v1.0 (tool-use)** |
+|---|---|---|
+| value-discovery (gather-required) | 13.6% | **51.5%** |
+| general OOD (new DBs) | 59.3% | **64.2%** |
+
+Trained by **behavioral cloning on denotation-verified teacher trajectories** (no stored logits, ~$1.4
+teacher cost); Q8_0 GGUF preserves the deltas. Details in `tooluse/README.md`.
+
+The legacy one-shot `cleo_infer.py` and the `actionrt/` GBNF loop below are **superseded** by `tooluse/`
+but kept for the v0.9 lineage.
+
+---
+
 # Cleo
 
 A small (~2B) **analyst-SQL** model + a thin **harness** — turns a database **schema + question**
