@@ -87,7 +87,7 @@ Drop it into an MCP server in a few lines — see [`examples/mcp_tool.py`](examp
 ## Links
 
 - **Model**: [`dreeseaw/cleo`](https://huggingface.co/dreeseaw/cleo) — Q8_0 GGUF + bf16
-- **Benchmark**: the value-discovery suite (open-sourced) — *coming soon*
+- **Benchmark**: [`dreeseaw/cleo-value-discovery`](https://huggingface.co/datasets/dreeseaw/cleo-value-discovery) — the value-discovery suite (open)
 - **Report**: [TECH_REPORT.md](TECH_REPORT.md)
 
 ---
