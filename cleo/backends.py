@@ -11,7 +11,7 @@ class GGUFBackend:
         self.llm = Llama(model_path=model_path, n_ctx=n_ctx, n_threads=n_threads,
                          n_gpu_layers=n_gpu_layers, verbose=False)
 
-    def generate(self, prompt: str, max_new_tokens: int = 160) -> str:
+    def generate(self, prompt: str, max_new_tokens: int = 256) -> str:
         out = self.llm(prompt, max_tokens=max_new_tokens, temperature=0.0, stop=["\n\n\n"])
         return out["choices"][0]["text"]
 
@@ -30,7 +30,7 @@ class HFBackend:
         self.model = AutoModelForCausalLM.from_pretrained(
             model, torch_dtype=torch.bfloat16, trust_remote_code=True).to(self.device).eval()
 
-    def generate(self, prompt: str, max_new_tokens: int = 160) -> str:
+    def generate(self, prompt: str, max_new_tokens: int = 256) -> str:
         enc = self.tok(prompt, return_tensors="pt").to(self.device)
         with self._torch.no_grad():
             out = self.model.generate(**enc, do_sample=False, max_new_tokens=max_new_tokens,

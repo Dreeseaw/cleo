@@ -3,10 +3,16 @@
     from cleo import Cleo
     cleo = Cleo.from_gguf("cleo_v1_0-no_mtp-Q8_0.gguf")
     ans = cleo.ask("How many employees are currently in each department?", conn)
-    print(ans.sql, ans.rows)
+    if ans.ok:
+        print(ans.sql, ans.rows)
+    elif ans.status == "clarify":
+        print(ans.clarification)
+    else:
+        print("error:", ans.error)
 """
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -16,25 +22,54 @@ from .db import introspect_schema, make_executor, run_readonly
 
 @dataclass
 class Answer:
+    """Result of `Cleo.ask`. Exactly one of (sql, clarification, error) is the outcome.
+
+    `bool(answer)` and `.ok` are True only on a successful SQL answer. A clarification is not an "answer":
+    handle it via `status == "clarify"`. `.status` is one of "ok" | "clarify" | "error" | "empty".
+    `rows`/`columns` are populated only for a successful sql answer with execute_final=True (and
+    `rows == []` means the query executed and returned no rows).
+    """
     sql: str | None = None
     rows: list | None = None
     columns: list | None = None
     clarification: str | None = None
-    gathers: list = field(default_factory=list)      # [(sql, columns, rows), ...]
-    discovered: list = field(default_factory=list)   # distinct string values Cleo saw while probing
+    gathers: list = field(default_factory=list)   # [(gather_sql, columns|None, rows|None), ...]
     error: str | None = None
-    raw: str | None = None                            # last model output (for debugging)
+    raw: str | None = None                         # last raw model output (debugging)
+
+    @property
+    def ok(self) -> bool:
+        return self.error is None and self.sql is not None
+
+    @property
+    def status(self) -> str:
+        if self.error is not None:
+            return "error"
+        if self.clarification is not None:
+            return "clarify"
+        return "ok" if self.sql is not None else "empty"
+
+    @property
+    def discovered(self) -> list:
+        """Distinct short string values Cleo saw while probing (derived from `gathers`)."""
+        seen: dict = {}
+        for _sql, _cols, rows in self.gathers:
+            for row in rows or []:
+                for c in row:
+                    if isinstance(c, str) and 0 < len(c) <= 64:
+                        seen[c] = None
+        return list(seen)
 
     def __bool__(self) -> bool:
-        return self.sql is not None or self.clarification is not None
+        return self.ok
 
 
 class Cleo:
     def __init__(self, backend: Any, default_max_gather: int = 3):
         self.backend = backend
         self.default_max_gather = default_max_gather
+        self._lock = threading.Lock()  # backends (llama.cpp / HF) are not thread-safe
 
-    # -- constructors -------------------------------------------------------
     @classmethod
     def from_gguf(cls, model_path: str, *, n_ctx: int = 4096, n_threads: int = 8,
                   n_gpu_layers: int = 0, **kw) -> "Cleo":
@@ -46,17 +81,19 @@ class Cleo:
         from .backends import HFBackend
         return cls(HFBackend(model, device=device), **kw)
 
-    # -- inference ----------------------------------------------------------
     def ask(self, question: str, conn: Any = None, *, schema: str | None = None,
             tables: list[str] | None = None, db_schema: str | None = None,
             max_gather: int | None = None, execute_final: bool = True,
             row_limit: int = 1000, dialect: str | None = "duckdb",
-            max_new_tokens: int = 160) -> Answer:
-        """Answer `question` against `conn` (any DB-API 2.0 connection or executor callable).
+            max_new_tokens: int = 256) -> Answer:
+        """Answer `question` against `conn` (a DB-API 2.0 connection or an executor callable).
 
-        Cleo probes the data read-only to discover real values/codes, then returns final SQL (and runs
-        it, capped at `row_limit`, unless execute_final=False). Pass `schema=` to skip introspection,
-        or `tables=[...]` to scope a large database.
+        Cleo probes the data read-only to discover real values, then returns final SQL (and runs it,
+        capped at `row_limit`, unless execute_final=False). Pass `schema=` to skip introspection, or
+        `tables=[...]` / `db_schema=` to scope a large database.
+
+        Raises ValueError/TypeError for *setup* problems (no conn, autocommit conn, too many tables with
+        no scoping). Model/DB *runtime* outcomes are returned on `Answer.error` — check `ans.ok`.
         """
         if conn is None:
             raise ValueError("ask() needs a connection or executor as the second argument")
@@ -65,49 +102,61 @@ class Cleo:
         if schema is None:
             schema = introspect_schema(conn, tables=tables, db_schema=db_schema)
 
-        observations: list[tuple[str, str]] = []
-        gather_log: list[tuple] = []   # (sql, columns, rows) exposed on Answer.gathers
-        discovered: list[str] = []
+        observations: list[tuple[str, str]] = []   # (sql, obs_text) -> prompt
+        gather_log: list[tuple] = []                # (sql, columns|None, rows|None) -> Answer.gathers
+        n_gather = 0
+        n_bad = 0
         max_steps = max_gather + 1
-        last_text = None
+        last = None
         for step in range(max_steps):
             prompt = contract.render_prompt(schema, question, observations,
-                                            gathers_left=max_gather - len(observations),
+                                            gathers_left=max_gather - n_gather,
                                             steps_left=max_steps - step)
-            last_text = self.backend.generate(prompt, max_new_tokens=max_new_tokens)
-            act = contract.normalize_action(contract.parse_action(last_text))
+            last = self._generate(prompt, max_new_tokens)
+            act = contract.normalize_action(contract.parse_action(last))
+
             if act is None:
-                if step == max_steps - 1:
-                    return Answer(error="unparsed_action", raw=last_text)
+                n_bad += 1
                 observations.append(("<invalid>", "ERROR: could not parse a valid JSON action."))
+                if n_bad >= 2 or len(observations) >= max_steps:
+                    return Answer(error="no_answer", gathers=gather_log, raw=last)
                 continue
-            if act["kind"] == "gather" and len(observations) < max_gather:
-                cols, rows, trunc, err = run_readonly(executor, act["sql"], limit=20, dialect=dialect)
-                obs_text = f"ERROR: {err}" if err else contract.format_observation(cols, rows, trunc)
-                if not err:
-                    gather_log.append((act["sql"], cols, rows))
-                    for row in rows:
-                        for c in row:
-                            if isinstance(c, str) and 0 < len(c) <= 64 and c not in discovered:
-                                discovered.append(c)
-                else:
+
+            if act["kind"] == "gather":
+                ok, why = contract.is_readonly(act["sql"], dialect=dialect)
+                if not ok or n_gather >= max_gather:
+                    n_bad += 1
+                    reason = why if not ok else "gather budget exhausted"
+                    observations.append((act["sql"], f"ERROR: gather rejected ({reason})."))
                     gather_log.append((act["sql"], None, None))
-                observations.append((act["sql"], obs_text))
+                    if len(observations) >= max_steps:
+                        return Answer(error="no_answer", gathers=gather_log, raw=last)
+                    continue
+                cols, rows, trunc, err = run_readonly(executor, act["sql"], limit=20, dialect=dialect)
+                n_gather += 1
+                if err:
+                    observations.append((act["sql"], f"ERROR: {err}"))
+                    gather_log.append((act["sql"], None, None))
+                else:
+                    observations.append((act["sql"], contract.format_observation(cols, rows, trunc)))
+                    gather_log.append((act["sql"], cols, rows))
+                if len(observations) >= max_steps:
+                    return Answer(error="no_answer", gathers=gather_log, raw=last)
                 continue
+
             # final
             if "clarify" in act:
-                return Answer(clarification=act["clarify"], gathers=gather_log,
-                              discovered=discovered, raw=last_text)
-            return self._finalize(act["sql"], executor, gather_log, discovered, execute_final,
-                                  row_limit, dialect, last_text)
-        return Answer(error="no_final_action", raw=last_text)
+                return Answer(clarification=act["clarify"], gathers=gather_log, raw=last)
+            ans = Answer(sql=act["sql"], gathers=gather_log, raw=last)
+            if execute_final:
+                cols, rows, trunc, err = run_readonly(executor, act["sql"], limit=row_limit, dialect=dialect)
+                if err:
+                    ans.error = err
+                else:
+                    ans.columns, ans.rows = cols, rows
+            return ans
+        return Answer(error="no_answer", gathers=gather_log, raw=last)
 
-    def _finalize(self, sql, executor, gather_log, discovered, execute_final, row_limit, dialect, raw):
-        ans = Answer(sql=sql, gathers=gather_log, discovered=discovered, raw=raw)
-        if execute_final:
-            cols, rows, trunc, err = run_readonly(executor, sql, limit=row_limit, dialect=dialect)
-            if err:
-                ans.error = err
-            else:
-                ans.columns, ans.rows = cols, rows
-        return ans
+    def _generate(self, prompt: str, max_new_tokens: int) -> str:
+        with self._lock:
+            return self.backend.generate(prompt, max_new_tokens=max_new_tokens)

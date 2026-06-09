@@ -4,7 +4,10 @@
     python examples/mcp_tool.py
 
 The whole integration is one `cleo.ask(...)` call; Cleo handles the discover-then-answer loop.
+Cleo serializes generation internally (the model backend isn't thread-safe), so a shared instance is fine.
 """
+from __future__ import annotations
+
 import os
 
 import psycopg2

@@ -1,97 +1,98 @@
-# Cleo v1.0 — tool-use SQL analyst (gather → discover values → answer)
+# Cleo
 
-**v1.0 is here (2026-06-09).** Cleo now *uses tools*: it issues read-only `gather` probes against the
-live DB to **discover real values/codes/conventions** before answering, instead of one-shot guessing.
-This is the lever that broke the value-discovery ceiling of v0.9.
+**A small (~2B) SQL analyst that discovers values in your data before it answers.**
 
-**Use it as a Python package** — point it at your own DB connection, no server, no pre-staging:
+Most text-to-SQL models map `question → SQL` in one shot — so when the right query depends on a literal
+that only lives in the *data* (a status code `'O'` not `'open'`, `"current"` meaning the sentinel
+`to_date = '9999-01-01'`, `GB` not `UK`), they guess, and guess wrong. Cleo instead issues read-only
+`gather` probes to **look first**, then writes its answer:
 
 ```python
 from cleo import Cleo
-cleo = Cleo.from_gguf("cleo_v1_0-no_mtp-Q8_0.gguf")   # or Cleo.from_hf("dreeseaw/cleo")
-ans  = cleo.ask("employees currently in each department?", conn)   # conn = any DB-API 2.0 connection
-ans.sql, ans.rows, ans.clarification, ans.discovered
+import psycopg2
+
+cleo = Cleo.from_gguf("cleo_v1_0-no_mtp-Q8_0.gguf")          # CPU-friendly; or Cleo.from_hf("dreeseaw/cleo")
+ans  = cleo.ask("employees currently in each department?", psycopg2.connect(DSN))
+
+ans.sql          # SELECT d.dept_name, COUNT(*) ... WHERE de.to_date = '9999-01-01' ...
+ans.rows         # executed result
+ans.discovered   # ["9999-01-01", ...] — the convention it found by probing
 ```
 
-`conn` is any `psycopg2` / `sqlite3` / `duckdb` / SQLAlchemy connection; every query is validated
-read-only and rolled back. Drop it into an MCP server (`examples/mcp_tool.py`) or a REPL. Package docs:
-[`cleo/`](cleo/) · [`pyproject.toml`](pyproject.toml). Weights on HF `dreeseaw/cleo`:
-`cleo_v1_0-no_mtp-Q8_0.gguf` (recommended) and the bf16 model under `v1.0/`.
+Point it at a DB-API 2.0 connection (Postgres, MySQL, SQLite, DuckDB; SQLAlchemy via `raw_connection()`).
+No server, no copying data into a local engine first. Every query is **validated read-only** (statement +
+AST + a side-effecting-function denylist) and rolled back. For production, also run Cleo under a
+**least-privilege, read-only DB role** — the in-process guard is defense-in-depth, not a substitute for
+database permissions.
 
-| suite | v0.9 (single-shot) | **v1.0 (tool-use)** |
+## Results
+
+Held-out, denotation-scored (execute predicted vs gold SQL, compare row-sets; schemas disjoint from all
+training data):
+
+| benchmark | v0.9 (one-shot) | **Cleo v1.0 (tool-use)** |
 |---|---|---|
-| value-discovery (gather-required) | 13.6% | **51.5%** |
-| general OOD (new DBs) | 59.3% | **64.2%** |
+| **value-discovery** — answer needs a discovered literal | 13.6% | **51.5%** |
+| general SQL, **out-of-distribution** databases | 59.3% | **64.2%** |
+| general SQL, in-distribution | 57.5% | 47.5% |
 
-Trained by **behavioral cloning on denotation-verified teacher trajectories** (no stored logits, ~$1.4
-teacher cost); Q8_0 GGUF preserves the deltas. The `tooluse/` training harness, legacy one-shot
-`cleo_infer.py`, and the `actionrt/` GBNF loop are kept for reference but superseded by the `cleo` package.
+The tool pays for itself on value-discovery (+38 points, where a one-shot model is structurally capped)
+and on *new* databases — the case that matters when you point it at a schema it has never seen.
+
+## How it was trained
+
+v1.0 was produced by **behavioral cloning on denotation-verified teacher trajectories**, for **~$1.30 of
+teacher inference** — no reinforcement learning, no stored logits:
+
+1. A cheap teacher drives the gather→final loop on ~700 curated questions across 472 schemas.
+2. A trajectory is kept **only if its final answer is denotation-correct** against gold.
+3. The 2B student is supervised on the kept `(state → action)` pairs, then calibrated with a slice of
+   "answer-directly" examples so it doesn't over-probe simple questions.
+
+The full method — and an honest account of the approaches that *failed* (tool-use RL hitting a
+gather-but-ignore wall, the clean-base-vs-warm-start surprise, the calibration⊥discovery tension at 2B,
+on-policy DAgger) — is in **[TECH_REPORT.md](TECH_REPORT.md)**.
+
+## Install
+
+```bash
+pip install "cleo-sql[gguf]"        # llama-cpp-python backend (CPU / Mac / CUDA)
+pip install "cleo-sql[hf]"          # transformers backend (GPU)
+hf download dreeseaw/cleo cleo_v1_0-no_mtp-Q8_0.gguf --local-dir .
+```
+
+Scope a large database, or hand Cleo the DDL yourself:
+
+```python
+cleo.ask("...", conn, tables=["orders", "customers"])   # only introspect these
+cleo.ask("...", conn, schema=my_ddl_string)             # skip introspection
+```
+
+Drop it into an MCP server in a few lines — see [`examples/mcp_tool.py`](examples/mcp_tool.py).
+
+> Notes: the distribution is `cleo-sql` but the import is `cleo` (heads-up: the Poetry CLI framework also
+> uses `import cleo`). Supported dialects are Postgres / MySQL / SQLite / DuckDB; Oracle and SQL Server
+> aren't (the row-cap and introspection assume `LIMIT` + `information_schema`/PRAGMA). Use a non-autocommit
+> connection so Cleo can roll back.
+
+## What's here
+
+| path | what |
+|---|---|
+| [`cleo/`](cleo/) | the package: `contract` (the trained action protocol), `db` (connection-agnostic read-only execution + schema introspection), `backends` (GGUF / HF), `agent` (the `Cleo` loop) |
+| [`TECH_REPORT.md`](TECH_REPORT.md) | training method + failure analysis |
+| [`examples/`](examples/) | MCP tool, quickstart |
+| [`tooluse/`](tooluse/) | the research training/eval harness (reference) |
+
+## Links
+
+- **Model**: [`dreeseaw/cleo`](https://huggingface.co/dreeseaw/cleo) — Q8_0 GGUF + bf16
+- **Benchmark**: the value-discovery suite (open-sourced) — *coming soon*
+- **Report**: [TECH_REPORT.md](TECH_REPORT.md)
 
 ---
 
-# Cleo
-
-A small (~2B) **analyst-SQL** model + a thin **harness** — turns a database **schema + question**
-into a read-only SQL query, or an honest **clarification** when the request is
-ambiguous/unsafe/out-of-schema. Personal research project.
-
-- Output is strict JSON, exactly one key: `{"sql": "..."}` or `{"clarification": "..."}`.
-- The model is *not* trained on tool-call trajectories — only (schema + question → final answer).
-  Grounding/execution is the **harness's** job (`actionrt/`).
-
-**Code** lives here (GitHub). **Weights** (GGUF) live on Hugging Face: `dreeseaw/cleo` (private).
-
-## Two ways to run
-
-1. **One-shot** (`cleo_infer.py`) — single generation, schema+question → SQL/clarify. Simple, fast.
-2. **Full harness** (`run_harness_demo.py`) — the `actionrt` GBNF-constrained **agentic loop**
-   (gather/read/write primitives over DuckDB, grounding, fixed-mode fallback). This is the real
-   product. **Heads-up for v0.9:** the model was SFT'd on final answers, *not* on harness
-   rollouts, so it drives the multi-step loop clumsily (takes valid actions but often doesn't
-   converge to a final answer). That's expected for a pre-release — **RLVR-in-harness (v0.95) is
-   what teaches it to use the loop.** Use this to dogfood the plumbing.
-
-## Lineage (v0.9)
-
-`Qwen3.5-2B-Base` → MSH3 SFT (LoRA→merged) → OPD on-policy distillation from a Qwen3.6-27B
-teacher (LoRA→merged) → **v0.9 amalgamation SFT** (LoRA→merged → GGUF): a LLaVA-style ~53k-row
-mixture (capability packs + a 40k diverse leak-free SynSQL-2.5M slice + multi-turn/recovery +
-abstain/clarify + grounding traces).
-
-### Results vs the prior champion (one-shot, answerable-denotation accuracy)
-
-| suite | prior champion | **Cleo v0.9** |
-|---|---|---|
-| real_db_ood_v2 | 15/43 | 17/43 |
-| **real_db_ood_v3 (OOD)** | 32/86 | **61/86** |
-| **in-dist canonical** | 19/99 | **59/99** |
-
-## Setup (Mac — fast via Metal)
-
-```bash
-git clone https://github.com/Dreeseaw/cleo.git && cd cleo
-pip install -r requirements.txt          # llama-cpp-python builds with Metal on Mac
-huggingface-cli login                    # access the private dreeseaw/cleo weights
-hf download dreeseaw/cleo cleo_v0_9-no_mtp-Q4_K_M.gguf --local-dir ./weights
-
-# one-shot:
-python cleo_infer.py --model weights/cleo_v0_9-no_mtp-Q4_K_M.gguf \
-  --schema "CREATE TABLE orders (id INT, customer_id INT, amount REAL, status TEXT); CREATE TABLE customers (id INT, name TEXT, country TEXT);" \
-  --question "Total order amount for US customers, by status."
-
-# full agentic harness (demo DB; rough on v0.9 pre-RLVR — that's the point):
-PYTHONPATH=. python run_harness_demo.py --backend llama-cpp \
-  --model-path weights/cleo_v0_9-no_mtp-Q4_K_M.gguf --n-gpu-layers -1 --max-steps 6
-```
-
-One-shot expected:
-```json
-{"sql": "SELECT status, SUM(amount) AS total_amount FROM orders WHERE customer_id IN (SELECT id FROM customers WHERE country = 'US') GROUP BY status ORDER BY status;"}
-```
-
-## Notes
-
-- `Q4_K_M` GGUF ≈ 1.27 GB. Runs on Mac (Metal, `n_gpu_layers=-1`), CUDA, or CPU (`0`).
-- Architecture: `qwen3_5` (hybrid linear-attention); the GGUF was converted with `--no-mtp`
-  (the MTP head isn't supported by llama.cpp's loader).
-- v0.9 is SFT only. **v0.95 = RLVR-in-harness** (teaches the agentic loop) — planned next.
+*A personal research project. Cleo is a 2B model: it sits on the value-discovery / general-SQL trade-off
+its size allows, and its residual errors are wrong-value bindings (it probes, then occasionally binds the
+wrong literal). It is meant as a small, honest, useful tool — and a study in getting real behavior into a
+small model cheaply.*

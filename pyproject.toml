@@ -9,14 +9,19 @@ description = "A small tool-using SQL analyst that discovers real values in your
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "Apache-2.0" }
-dependencies = ["sqlglot>=20"]
+dependencies = ["sqlglot>=20,<32"]
 
 [project.optional-dependencies]
-gguf = ["llama-cpp-python>=0.3"]
-hf = ["torch", "transformers>=4.45", "huggingface_hub"]
+gguf = ["llama-cpp-python>=0.3,<1"]
+hf = ["torch>=2.1", "transformers>=4.45", "huggingface_hub"]
+test = ["pytest", "duckdb"]
 
 [project.urls]
 Homepage = "https://github.com/Dreeseaw/cleo"
 
 [tool.setuptools]
 packages = ["cleo"]
+license-files = ["LICENSE"]
+
+[tool.setuptools.package-data]
+cleo = ["py.typed"]
