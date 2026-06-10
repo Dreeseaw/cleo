@@ -57,7 +57,7 @@ pip install "cleo-sql[gguf]"       # llama-cpp-python backend (CPU/Mac/CUDA)
 pip install "cleo-sql[hf]"         # transformers backend (GPU)
 pip install "cleo-sql[gguf,mcp]"   # MCP server extras
 # Weights download + cache themselves on first use: Cleo.from_gguf() pulls the current champion
-# Q8_0 GGUF (bf16 parity) from HF. If the repo is private, run `hf auth login` first.
+# Q8_0 GGUF (bf16 parity) from HF.
 ```
 
 Run the tests (no model/GPU needed): `pip install -e ".[test]" && pytest`
