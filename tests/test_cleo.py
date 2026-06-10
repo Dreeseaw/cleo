@@ -193,6 +193,37 @@ def test_schema_enrichment_fks_and_samples():
     assert "examples:" in schema
 
 
+# ---------------------------------------------------------------- weights resolution / CLI
+def test_from_gguf_defaults_to_hub_download():
+    from cleo import backends
+    orig_dl, orig_be = backends.download_gguf, backends.GGUFBackend
+    backends.download_gguf = lambda: "/fake/champion.gguf"
+    backends.GGUFBackend = lambda path, **kw: ("backend", path)
+    try:
+        cleo = Cleo.from_gguf()                       # no path -> resolved from the hub
+        assert cleo.backend == ("backend", "/fake/champion.gguf")
+        cleo = Cleo.from_gguf("/local/m.gguf")        # explicit path -> no download
+        assert cleo.backend == ("backend", "/local/m.gguf")
+    finally:
+        backends.download_gguf, backends.GGUFBackend = orig_dl, orig_be
+
+
+def test_cli_connect():
+    import tempfile, os
+    from cleo.cli import connect
+    with tempfile.TemporaryDirectory() as d:
+        p = os.path.join(d, "x.sqlite")
+        sqlite3.connect(p).close()
+        con = connect(p)
+        assert hasattr(con, "cursor")
+        con.close()
+        try:                                          # missing file must NOT be silently created
+            connect(os.path.join(d, "nope.sqlite"))
+            assert False, "should exit on missing db file"
+        except SystemExit:
+            pass
+
+
 # ---------------------------------------------------------------- Answer semantics (DX)
 def test_answer_truthiness():
     assert bool(Answer(sql="SELECT 1"))

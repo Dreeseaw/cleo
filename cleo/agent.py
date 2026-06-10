@@ -1,7 +1,7 @@
 """Cleo — a tool-using SQL analyst you point at your own database connection.
 
     from cleo import Cleo
-    cleo = Cleo.from_gguf("cleo_v1_2_bird-no_mtp-Q8_0.gguf")
+    cleo = Cleo.from_gguf()   # downloads + caches the current champion (or pass a local GGUF path)
     ans = cleo.ask("How many employees are currently in each department?", conn)
     if ans.ok:
         print(ans.sql, ans.rows)
@@ -71,10 +71,14 @@ class Cleo:
         self._lock = threading.Lock()  # backends (llama.cpp / HF) are not thread-safe
 
     @classmethod
-    def from_gguf(cls, model_path: str, *, n_ctx: int = 4096, n_threads: int = 8,
+    def from_gguf(cls, model_path: str | None = None, *, n_ctx: int = 4096, n_threads: int = 8,
                   n_gpu_layers: int = 0, **kw) -> "Cleo":
-        from .backends import GGUFBackend
-        return cls(GGUFBackend(model_path, n_ctx=n_ctx, n_threads=n_threads, n_gpu_layers=n_gpu_layers), **kw)
+        """No `model_path` -> download (or reuse the cached copy of) the current champion from HF."""
+        from . import backends
+        if model_path is None:
+            model_path = backends.download_gguf()
+        return cls(backends.GGUFBackend(model_path, n_ctx=n_ctx, n_threads=n_threads,
+                                        n_gpu_layers=n_gpu_layers), **kw)
 
     @classmethod
     def from_hf(cls, model: str = "dreeseaw/cleo", *, device: str | None = None, **kw) -> "Cleo":

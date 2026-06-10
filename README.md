@@ -11,7 +11,7 @@ No server, no pre-staging. Hand it a live DB-API connection and ask:
 from cleo import Cleo
 import psycopg2
 
-cleo = Cleo.from_gguf("cleo_v1_2_bird-no_mtp-Q8_0.gguf")     # CPU-friendly; or Cleo.from_hf("dreeseaw/cleo")
+cleo = Cleo.from_gguf()   # downloads + caches the current champion (CPU-friendly); or Cleo.from_hf(...)
 conn = psycopg2.connect("postgresql://...")            # your existing connection — Postgres, SQLite, DuckDB, ...
 
 ans = cleo.ask("How many employees are currently in each department?", conn)
@@ -36,9 +36,19 @@ cleo.ask("...", conn, tables=["employees", "departments"])   # only these tables
 cleo.ask("...", conn, schema=my_ddl_string)                  # or hand it the DDL yourself
 ```
 
+### CLI
+```bash
+cleo "total revenue by region" --db warehouse.duckdb
+cleo "active users this week?" --db postgresql://me@host/db --tables users,sessions --json
+```
+
 ### As an MCP tool
-`cleo.ask(...)` is a single call with no setup — drop it straight into an MCP server (see
-`examples/mcp_tool.py`).
+`cleo mcp --db "$DATABASE_URL"` serves Cleo as an MCP server (`pip install "cleo-sql[gguf,mcp]"`), so
+any agent gets a natural-language `query_database` tool. Claude Code / Claude Desktop config:
+
+```json
+"cleo": { "command": "cleo", "args": ["mcp", "--db", "postgresql://..."] }
+```
 
 ## Install
 Not on PyPI yet — install from the repo:
@@ -47,8 +57,8 @@ Not on PyPI yet — install from the repo:
 git clone https://github.com/Dreeseaw/cleo && cd cleo
 pip install -e ".[gguf]"         # llama-cpp-python backend (CPU/Mac/CUDA)
 pip install -e ".[hf]"           # transformers backend (GPU)
-# HF weights (private): Cleo.from_hf("dreeseaw/cleo") pulls the current champion automatically
-# GGUF (v1.2 Q8_0, bf16-parity): hf download dreeseaw/cleo cleo_v1_2_bird-no_mtp-Q8_0.gguf --local-dir .
+# Weights download + cache themselves on first use: Cleo.from_gguf() pulls the current champion
+# Q8_0 GGUF (bf16-parity) from HF (private — `hf auth login` first); same for Cleo.from_hf().
 ```
 
 Run the tests (no model/GPU needed): `pip install -e ".[test]" && pytest`
@@ -61,7 +71,7 @@ Run the tests (no model/GPU needed): `pip install -e ".[test]" && pytest`
 - `revision="v0.9"`: original single-shot SFT model.
 
 ## API
-- `Cleo.from_gguf(path, *, n_ctx=4096, n_threads=8, n_gpu_layers=0)`
+- `Cleo.from_gguf(path=None, *, n_ctx=4096, n_threads=8, n_gpu_layers=0)` — no path downloads/caches the current champion
 - `Cleo.from_hf(model="dreeseaw/cleo", *, device=None)`
 - `cleo.ask(question, conn, *, schema=None, tables=None, max_gather=3, max_repair=2, execute_final=True, row_limit=1000, dialect=None, schema_fks=False, schema_samples=0) -> Answer` — `dialect` auto-detects from the connection; model SQL is transpiled from DuckDB; failed finals self-repair from the DB error up to `max_repair` times.
 - `Answer(sql, rows, columns, clarification, gathers, discovered, error)` — truthy when answered.

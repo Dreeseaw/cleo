@@ -2,6 +2,18 @@
 is cheap and you only pay for the backend you use."""
 from __future__ import annotations
 
+DEFAULT_REPO = "dreeseaw/cleo"
+DEFAULT_GGUF = "cleo-Q8_0.gguf"   # stable alias on HF: always the current champion quant
+
+
+def download_gguf(repo_id: str = DEFAULT_REPO, filename: str = DEFAULT_GGUF,
+                  revision: str | None = None) -> str:
+    """Fetch the champion GGUF from HF and return its local path. The download is etag-cached:
+    repeat calls reuse the cache and pick up a newly shipped champion automatically; pass
+    `revision=` to pin."""
+    from huggingface_hub import hf_hub_download
+    return hf_hub_download(repo_id, filename, revision=revision)
+
 
 class GGUFBackend:
     """llama-cpp-python backend (CPU or GPU). The lightweight default for laptops / MCP servers."""
