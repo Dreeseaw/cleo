@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from . import contract
-from .db import introspect_schema, make_executor, run_readonly
+from .db import MODEL_DIALECT, detect_dialect, introspect_schema, make_executor, run_readonly
 
 
 @dataclass
@@ -83,14 +83,19 @@ class Cleo:
 
     def ask(self, question: str, conn: Any = None, *, schema: str | None = None,
             tables: list[str] | None = None, db_schema: str | None = None,
-            max_gather: int | None = None, execute_final: bool = True,
-            row_limit: int = 1000, dialect: str | None = "duckdb",
+            max_gather: int | None = None, max_repair: int = 2, execute_final: bool = True,
+            row_limit: int = 1000, dialect: str | None = None,
+            schema_fks: bool = False, schema_samples: int = 0,
             max_new_tokens: int = 256) -> Answer:
         """Answer `question` against `conn` (a DB-API 2.0 connection or an executor callable).
 
         Cleo probes the data read-only to discover real values, then returns final SQL (and runs it,
         capped at `row_limit`, unless execute_final=False). Pass `schema=` to skip introspection, or
         `tables=[...]` / `db_schema=` to scope a large database.
+
+        Cleo writes DuckDB-flavored SQL; the harness transpiles it to the connection's dialect before
+        executing. `dialect` is auto-detected from the connection (sqlite/postgres/mysql/duckdb); pass it
+        explicitly to override, or when using a bare executor callable.
 
         Raises ValueError/TypeError for *setup* problems (no conn, autocommit conn, too many tables with
         no scoping). Model/DB *runtime* outcomes are returned on `Answer.error` — check `ans.ok`.
@@ -99,14 +104,18 @@ class Cleo:
             raise ValueError("ask() needs a connection or executor as the second argument")
         max_gather = self.default_max_gather if max_gather is None else max_gather
         executor = make_executor(conn)
+        if dialect is None:
+            dialect = detect_dialect(conn) if hasattr(conn, "cursor") else MODEL_DIALECT
         if schema is None:
-            schema = introspect_schema(conn, tables=tables, db_schema=db_schema)
+            schema = introspect_schema(conn, tables=tables, db_schema=db_schema,
+                                       fks=schema_fks, samples=schema_samples)
 
         observations: list[tuple[str, str]] = []   # (sql, obs_text) -> prompt
         gather_log: list[tuple] = []                # (sql, columns|None, rows|None) -> Answer.gathers
         n_gather = 0
         n_bad = 0
-        max_steps = max_gather + 1
+        n_repair = 0
+        max_steps = max_gather + 1 + max_repair
         last = None
         for step in range(max_steps):
             prompt = contract.render_prompt(schema, question, observations,
@@ -123,7 +132,7 @@ class Cleo:
                 continue
 
             if act["kind"] == "gather":
-                ok, why = contract.is_readonly(act["sql"], dialect=dialect)
+                ok, why = contract.is_readonly(act["sql"], dialect=MODEL_DIALECT)
                 if not ok or n_gather >= max_gather:
                     n_bad += 1
                     reason = why if not ok else "gather budget exhausted"
@@ -151,6 +160,12 @@ class Cleo:
             if execute_final:
                 cols, rows, trunc, err = run_readonly(executor, act["sql"], limit=row_limit, dialect=dialect)
                 if err:
+                    # self-repair: surface the DB error (as a familiar error observation) and let it retry
+                    if n_repair < max_repair:
+                        n_repair += 1
+                        observations.append((act["sql"], f"ERROR: {err}"))
+                        gather_log.append((act["sql"], None, None))
+                        continue
                     ans.error = err
                 else:
                     ans.columns, ans.rows = cols, rows

@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from cleo import Answer, Cleo
 from cleo.contract import (INSTRUCTION, format_observation, is_readonly, normalize_action,
                            parse_action, render_prompt)
-from cleo.db import introspect_schema, make_executor, run_readonly
+from cleo.db import detect_dialect, introspect_schema, make_executor, run_readonly, transpile_sql
 
 
 # ---------------------------------------------------------------- contract / fidelity
@@ -101,6 +101,23 @@ def test_introspect_sqlite():
     assert "CREATE TABLE orders" in schema and "status" in schema
 
 
+def test_dialect_detect_and_transpile():
+    assert detect_dialect(_orders_db()) == "sqlite"
+    # DuckDB STRFTIME(date, fmt) has the args in the OPPOSITE order from SQLite STRFTIME(fmt, date)
+    duck = "SELECT STRFTIME(d, '%Y') FROM t"
+    assert transpile_sql(duck, "duckdb") == duck                  # no-op when target == model dialect
+    assert transpile_sql(duck, "sqlite") == "SELECT STRFTIME('%Y', d) FROM t"
+
+
+def test_transpile_makes_duckdb_sql_run_on_sqlite():
+    con = sqlite3.connect(":memory:")
+    con.executescript("CREATE TABLE t (d TEXT); INSERT INTO t VALUES ('2021-05-01'),('2022-06-01');")
+    ex = make_executor(con)
+    # DuckDB arg order would give wrong results on SQLite; transpiled, it's correct
+    cols, rows, trunc, err = run_readonly(ex, "SELECT STRFTIME(d, '%Y') AS y FROM t ORDER BY y", dialect="sqlite")
+    assert err is None and [r[0] for r in rows] == ["2021", "2022"], (rows, err)
+
+
 # ---------------------------------------------------------------- agent loop (fake backend)
 class FakeBackend:
     def __init__(self, scripted):
@@ -136,6 +153,33 @@ def test_clarify():
     cleo = Cleo(FakeBackend(['{"tool":"final","clarify":"which metric?"}']))
     ans = cleo.ask("ambiguous", _orders_db())
     assert ans.status == "clarify" and ans.clarification == "which metric?" and not ans.ok
+
+
+def test_self_repair_recovers_a_failed_final():
+    # first final references a non-existent column (exec error); after the error is surfaced, it fixes it
+    cleo = Cleo(FakeBackend([
+        '{"tool":"final","sql":"SELECT nope FROM orders"}',
+        '{"tool":"final","sql":"SELECT region FROM orders"}',
+    ]))
+    ans = cleo.ask("q", _orders_db(), max_gather=0, max_repair=2)
+    assert ans.ok and ans.sql == "SELECT region FROM orders", (ans.sql, ans.error)
+
+
+def test_self_repair_gives_up_after_budget():
+    cleo = Cleo(FakeBackend(['{"tool":"final","sql":"SELECT nope FROM orders"}']))
+    ans = cleo.ask("q", _orders_db(), max_gather=0, max_repair=1)
+    assert ans.status == "error" and not ans.ok
+
+
+def test_schema_enrichment_fks_and_samples():
+    con = sqlite3.connect(":memory:")
+    con.executescript(
+        "CREATE TABLE customers (id INTEGER PRIMARY KEY, name TEXT);"
+        "CREATE TABLE orders2 (id INTEGER, customer_id INTEGER, FOREIGN KEY(customer_id) REFERENCES customers(id));"
+        "INSERT INTO customers VALUES (1,'A'); INSERT INTO orders2 VALUES (10,1);")
+    schema = introspect_schema(con, fks=True, samples=2)
+    assert "orders2.customer_id -> customers.id" in schema
+    assert "examples:" in schema
 
 
 # ---------------------------------------------------------------- Answer semantics (DX)

@@ -20,9 +20,34 @@ from .contract import is_readonly
 # An executor maps (sql, limit) -> (columns, rows, truncated).
 Executor = Callable[[str, int], "tuple[list, list, bool]"]
 
+# Cleo is trained to write DuckDB-flavored SQL. The harness TRANSPILES it to the connection's dialect
+# before executing, so the model's native output runs correctly against SQLite/Postgres/MySQL/etc.
+MODEL_DIALECT = "duckdb"
+_DRIVER_DIALECT = {"sqlite3": "sqlite", "psycopg2": "postgres", "psycopg": "postgres",
+                   "duckdb": "duckdb", "pymysql": "mysql", "mysql": "mysql",
+                   "mariadb": "mysql", "MySQLdb": "mysql"}
+
 _IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_$]*$")
 _SYS_SCHEMAS = ("information_schema", "pg_catalog", "pg_toast", "sys", "mysql", "performance_schema")
 _STMT_TIMEOUT_MS = 15000
+
+
+def detect_dialect(conn: Any) -> str:
+    """Best-effort: map a DB-API connection to a sqlglot dialect (falls back to the model's own)."""
+    mod = type(conn).__module__.split(".")[0]
+    return _DRIVER_DIALECT.get(mod, MODEL_DIALECT)
+
+
+def transpile_sql(sql: str, target: str | None, source: str = MODEL_DIALECT) -> str:
+    """Translate the model's `source`-dialect SQL to the connection's `target` dialect (best-effort)."""
+    if not target or target == source:
+        return sql
+    try:
+        import sqlglot
+        out = sqlglot.transpile(sql, read=source, write=target)
+        return out[0] if out else sql
+    except Exception:
+        return sql  # if it won't transpile, run as-is and let the DB report the error
 
 
 def _quiet(fn) -> None:
@@ -86,13 +111,18 @@ def make_executor(source: Any) -> Executor:
 
 
 def run_readonly(executor: Executor, sql: str, limit: int = 20,
-                 dialect: str | None = "duckdb") -> tuple[list, list, bool, str | None]:
-    """Validate `sql` is read-only, run it via `executor`, return (columns, rows, truncated, error)."""
-    ok, why = is_readonly(sql, dialect=dialect)
+                 dialect: str | None = MODEL_DIALECT) -> tuple[list, list, bool, str | None]:
+    """Guard the model's SQL (read-only), TRANSPILE it from DuckDB to the connection's `dialect`, run it.
+
+    Returns (columns, rows, truncated, error). The guard parses the model's native DuckDB; the transpiled
+    SQL is what executes — so a DuckDB-trained model runs correctly against SQLite/Postgres/etc.
+    """
+    ok, why = is_readonly(sql, dialect=MODEL_DIALECT)
     if not ok:
         return [], [], False, f"rejected ({why})"
+    exec_sql = transpile_sql(sql, dialect)
     try:
-        columns, rows, truncated = executor(sql, limit)
+        columns, rows, truncated = executor(exec_sql, limit)
         return columns, rows, truncated, None
     except Exception as exc:  # surface DB errors back to the model as an observation
         return [], [], False, str(exc)[:120]
@@ -102,12 +132,24 @@ def _quote_ident(name: str) -> str:
     return '"' + str(name).replace('"', '""') + '"'
 
 
-def introspect_schema(source: Any, tables: list[str] | None = None,
-                      db_schema: str | None = None, max_tables: int = 60) -> str:
+def _ddl_ident(name: str) -> str:
+    """Render an identifier as it must be written in SQL: quoted iff it needs quoting.
+
+    Schema text is what the model copies identifiers from — rendering `Examination Date` or `T-CHO`
+    unquoted teaches it to write unparseable SQL against real-world schemas.
+    """
+    s = str(name)
+    return s if _IDENT_RE.match(s) else _quote_ident(s)
+
+
+def introspect_schema(source: Any, tables: list[str] | None = None, db_schema: str | None = None,
+                      max_tables: int = 60, fks: bool = False, samples: int = 0) -> str:
     """Build CREATE TABLE DDL from a live connection. Scope big DBs with `tables=[...]` / `db_schema=`.
 
     Tries ANSI `information_schema.columns` (Postgres/MySQL/DuckDB); falls back to SQLite `PRAGMA`. Raises
     if there are more than `max_tables` tables and no scoping was given (rather than silently truncating).
+    `fks=True` appends foreign-key relationships (SQLite); `samples=N` appends N example rows per table —
+    both help the model ground columns to the right table.
     """
     if not hasattr(source, "cursor"):
         raise TypeError("schema introspection needs a DB-API connection; pass schema=... instead")
@@ -126,8 +168,44 @@ def introspect_schema(source: Any, tables: list[str] | None = None,
         raise RuntimeError(
             f"{len(cols_by_table)} tables found (> max_tables={max_tables}); scope with "
             f"tables=[...] or db_schema='...' so the prompt stays focused")
-    items = list(cols_by_table.items())[:max_tables]
-    return "\n".join(f"CREATE TABLE {t} ({', '.join(cols)});" for t, cols in items)
+    lines = []
+    for t, cols in list(cols_by_table.items())[:max_tables]:
+        lines.append(f"CREATE TABLE {_ddl_ident(t)} ({', '.join(cols)});")
+        if fks:
+            for frm, rt, rc in _table_fks(source, t):
+                lines.append(f"  -- {_ddl_ident(t)}.{_ddl_ident(frm)} -> {_ddl_ident(rt)}.{_ddl_ident(rc)}")
+        if samples > 0:
+            srows = _table_samples(source, t, samples)
+            if srows:
+                lines.append(f"  -- examples: {srows}")
+    return "\n".join(lines)
+
+
+def _table_fks(source: Any, table: str) -> list:
+    """Foreign keys for `table` (SQLite PRAGMA; empty for engines where it doesn't apply)."""
+    cur = source.cursor()
+    try:
+        cur.execute(f"PRAGMA foreign_key_list({_quote_ident(table)})")
+        return [(r[3], r[2], r[4]) for r in cur.fetchall()]  # (from_col, ref_table, ref_col)
+    except Exception:
+        return []
+    finally:
+        _quiet(source.rollback)
+        _quiet(cur.close)
+
+
+def _table_samples(source: Any, table: str, n: int) -> str:
+    cur = source.cursor()
+    try:
+        cur.execute(f"SELECT * FROM {_quote_ident(table)} LIMIT {int(n)}")
+        rows = [[_normalize_cell(c) for c in row] for row in cur.fetchmany(n)]
+        body = ", ".join(str(r) for r in rows)
+        return body[:240] + (" ..." if len(body) > 240 else "")
+    except Exception:
+        return ""
+    finally:
+        _quiet(source.rollback)
+        _quiet(cur.close)
 
 
 def _introspect_ansi(cur: Any, want: set[str] | None, db_schema: str | None) -> dict | None:
@@ -149,7 +227,7 @@ def _introspect_ansi(cur: Any, want: set[str] | None, db_schema: str | None) -> 
         if want is not None and str(table_name).lower() not in want:
             continue
         key = f"{table_schema}.{table_name}" if multi_schema else str(table_name)
-        out.setdefault(key, []).append(f"{column_name} {data_type}")
+        out.setdefault(key, []).append(f"{_ddl_ident(column_name)} {data_type}")
     return out
 
 
@@ -161,5 +239,5 @@ def _introspect_sqlite(cur: Any, want: set[str] | None) -> dict[str, list[str]]:
         if want is not None and str(name).lower() not in want:
             continue
         cur.execute(f"PRAGMA table_info({_quote_ident(name)})")  # identifier quoted -> injection-safe
-        out[name] = [f"{r[1]} {r[2]}" for r in cur.fetchall()]
+        out[name] = [f"{_ddl_ident(r[1])} {r[2]}" for r in cur.fetchall()]
     return out

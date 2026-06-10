@@ -1,98 +1,64 @@
-# Cleo
+# cleo
 
-**A small (~2B) SQL analyst that discovers values in your data before it answers.**
+A small (~2B) **tool-using SQL analyst** you point at your own database connection. Cleo probes the data
+read-only to **discover real values, codes, and conventions** (e.g. that *"current"* means
+`to_date = '9999-01-01'`, or status `'O'` not `'open'`) **before** writing its answer — the thing a
+one-shot text-to-SQL model can't do because it has to guess the literal.
 
-Most text-to-SQL models map `question → SQL` in one shot — so when the right query depends on a literal
-that only lives in the *data* (a status code `'O'` not `'open'`, `"current"` meaning the sentinel
-`to_date = '9999-01-01'`, `GB` not `UK`), they guess, and guess wrong. Cleo instead issues read-only
-`gather` probes to **look first**, then writes its answer:
+No server, no pre-staging. Hand it a live DB-API connection and ask:
 
 ```python
 from cleo import Cleo
 import psycopg2
 
-cleo = Cleo.from_gguf("cleo_v1_0-no_mtp-Q8_0.gguf")          # CPU-friendly; or Cleo.from_hf("dreeseaw/cleo")
-ans  = cleo.ask("employees currently in each department?", psycopg2.connect(DSN))
+cleo = Cleo.from_gguf("cleo_v1_0-no_mtp-Q8_0.gguf")     # CPU-friendly; or Cleo.from_hf("dreeseaw/cleo")
+conn = psycopg2.connect("postgresql://...")            # your existing connection — Postgres, SQLite, DuckDB, ...
 
-ans.sql          # SELECT d.dept_name, COUNT(*) ... WHERE de.to_date = '9999-01-01' ...
-ans.rows         # executed result
-ans.discovered   # ["9999-01-01", ...] — the convention it found by probing
+ans = cleo.ask("How many employees are currently in each department?", conn)
+print(ans.sql)            # the final read-only SELECT
+print(ans.rows)           # executed result (rows), or None if Cleo asked to clarify
+print(ans.clarification)  # set when the question is ambiguous / out-of-schema
+print(ans.discovered)     # real values Cleo found while probing
 ```
 
-Point it at a DB-API 2.0 connection (Postgres, MySQL, SQLite, DuckDB; SQLAlchemy via `raw_connection()`).
-No server, no copying data into a local engine first. Every query is **validated read-only** (statement +
-AST + a side-effecting-function denylist) and rolled back. For production, also run Cleo under a
-**least-privilege, read-only DB role** — the in-process guard is defense-in-depth, not a substitute for
-database permissions.
+`conn` is **any DB-API 2.0 connection** (`psycopg2`, `sqlite3`, `duckdb`, a SQLAlchemy
+`engine.raw_connection()`), or a callable `executor(sql, limit) -> (columns, rows, truncated)`.
 
-## Results
+### Safety
+Every statement Cleo issues is **validated read-only** (single `SELECT`/`WITH`, AST-checked) and run in a
+rolled-back transaction — it never writes. Point it at production safely.
 
-Held-out, denotation-scored (execute predicted vs gold SQL, compare row-sets; schemas disjoint from all
-training data):
-
-| benchmark | v0.9 (one-shot) | **Cleo v1.0 (tool-use)** |
-|---|---|---|
-| **value-discovery** — answer needs a discovered literal | 13.6% | **51.5%** |
-| general SQL, **out-of-distribution** databases | 59.3% | **64.2%** |
-| general SQL, in-distribution | 57.5% | 47.5% |
-
-The tool pays for itself on value-discovery (+38 points, where a one-shot model is structurally capped)
-and on *new* databases — the case that matters when you point it at a schema it has never seen.
-
-## How it was trained
-
-v1.0 was produced by **behavioral cloning on denotation-verified teacher trajectories**, for **~$1.30 of
-teacher inference** — no reinforcement learning, no stored logits:
-
-1. A cheap teacher drives the gather→final loop on ~700 curated questions across 472 schemas.
-2. A trajectory is kept **only if its final answer is denotation-correct** against gold.
-3. The 2B student is supervised on the kept `(state → action)` pairs, then calibrated with a slice of
-   "answer-directly" examples so it doesn't over-probe simple questions.
-
-The full method — and an honest account of the approaches that *failed* (tool-use RL hitting a
-gather-but-ignore wall, the clean-base-vs-warm-start surprise, the calibration⊥discovery tension at 2B,
-on-policy DAgger) — is in **[TECH_REPORT.md](TECH_REPORT.md)**.
-
-## Install
-
-```bash
-pip install "cleo-sql[gguf]"        # llama-cpp-python backend (CPU / Mac / CUDA)
-pip install "cleo-sql[hf]"          # transformers backend (GPU)
-hf download dreeseaw/cleo cleo_v1_0-no_mtp-Q8_0.gguf --local-dir .
-```
-
-Scope a large database, or hand Cleo the DDL yourself:
+### Big databases
+Schema is introspected from the connection. Scope it so the prompt stays focused:
 
 ```python
-cleo.ask("...", conn, tables=["orders", "customers"])   # only introspect these
-cleo.ask("...", conn, schema=my_ddl_string)             # skip introspection
+cleo.ask("...", conn, tables=["employees", "departments"])   # only these tables
+cleo.ask("...", conn, schema=my_ddl_string)                  # or hand it the DDL yourself
 ```
 
-Drop it into an MCP server in a few lines — see [`examples/mcp_tool.py`](examples/mcp_tool.py).
+### As an MCP tool
+`cleo.ask(...)` is a single call with no setup — drop it straight into an MCP server (see
+`examples/mcp_tool.py`).
 
-> Notes: the distribution is `cleo-sql` but the import is `cleo` (heads-up: the Poetry CLI framework also
-> uses `import cleo`). Supported dialects are Postgres / MySQL / SQLite / DuckDB; Oracle and SQL Server
-> aren't (the row-cap and introspection assume `LIMIT` + `information_schema`/PRAGMA). Use a non-autocommit
-> connection so Cleo can roll back.
+## Install
+```bash
+pip install "cleo-sql[gguf]"     # llama-cpp-python backend (CPU/Mac/CUDA)
+pip install "cleo-sql[hf]"       # transformers backend (GPU)
+# HF weights (private): Cleo.from_hf("dreeseaw/cleo") pulls the current champion automatically
+# GGUF (still v1.0; v1.2 not yet quantized): hf download dreeseaw/cleo cleo_v1_0-no_mtp-Q8_0.gguf --local-dir .
+```
 
-## What's here
+## Model versions (HF `dreeseaw/cleo`)
+- **main = v1.2-bird** (2026-06-10): BIRD-repair distillation champion — BIRD-minidev 30.65%
+  (434, same-harness), VD 57.6%, exec-error rate 12.7%. Best with `ask(..., max_repair=2,
+  schema_fks=True)` (needs this package version for the repair loop + quoted-DDL introspection).
+- `revision="v0.9"`: original single-shot SFT model.
 
-| path | what |
-|---|---|
-| [`cleo/`](cleo/) | the package: `contract` (the trained action protocol), `db` (connection-agnostic read-only execution + schema introspection), `backends` (GGUF / HF), `agent` (the `Cleo` loop) |
-| [`TECH_REPORT.md`](TECH_REPORT.md) | training method + failure analysis |
-| [`examples/`](examples/) | MCP tool, quickstart |
-| [`tooluse/`](tooluse/) | the research training/eval harness (reference) |
+## API
+- `Cleo.from_gguf(path, *, n_ctx=4096, n_threads=8, n_gpu_layers=0)`
+- `Cleo.from_hf(model="dreeseaw/cleo", *, device=None)`
+- `cleo.ask(question, conn, *, schema=None, tables=None, max_gather=3, max_repair=2, execute_final=True, row_limit=1000, dialect=None, schema_fks=False, schema_samples=0) -> Answer` — `dialect` auto-detects from the connection; model SQL is transpiled from DuckDB; failed finals self-repair from the DB error up to `max_repair` times.
+- `Answer(sql, rows, columns, clarification, gathers, discovered, error)` — truthy when answered.
 
-## Links
-
-- **Model**: [`dreeseaw/cleo`](https://huggingface.co/dreeseaw/cleo) — Q8_0 GGUF + bf16
-- **Benchmark**: [`dreeseaw/cleo-value-discovery`](https://huggingface.co/datasets/dreeseaw/cleo-value-discovery) — the value-discovery suite (open)
-- **Report**: [TECH_REPORT.md](TECH_REPORT.md)
-
----
-
-*A personal research project. Cleo is a 2B model: it sits on the value-discovery / general-SQL trade-off
-its size allows, and its residual errors are wrong-value bindings (it probes, then occasionally binds the
-wrong literal). It is meant as a small, honest, useful tool — and a study in getting real behavior into a
-small model cheaply.*
+Trained by behavioral cloning on denotation-verified teacher trajectories. v1.0 beats the one-shot
+baseline on value-discovery (13.6% → 51.5%) and on out-of-distribution databases (59.3% → 64.2%).
