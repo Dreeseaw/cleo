@@ -12,7 +12,7 @@ from cleo import Cleo
 import psycopg2
 
 cleo = Cleo.from_gguf()   # downloads + caches model (CPU-friendly); or Cleo.from_hf(...)
-conn = psycopg2.connect("postgresql://...") # your existing connection — Postgres, SQLite, DuckDB, ...
+conn = psycopg2.connect("postgresql://...") # your existing connection: Postgres, SQLite, DuckDB, ...
 
 ans = cleo.ask("How many employees are currently in each department?", conn)
 print(ans.sql)            # the final read-only SELECT
@@ -26,7 +26,7 @@ print(ans.discovered)     # real values Cleo found while probing
 
 ### Safety
 Every statement Cleo issues is **validated read-only** (single `SELECT`/`WITH`, AST-checked) and run in a
-rolled-back transaction — it never writes. Point it at production safely.
+rolled-back transaction. It never writes.
 
 ### Big databases
 Schema is introspected from the connection. Scope it so the prompt stays focused:
@@ -43,28 +43,27 @@ cleo "active users this week?" --db postgresql://me@host/db --tables users,sessi
 ```
 
 ### As an MCP tool
-`cleo mcp --db "$DATABASE_URL"` serves Cleo as an MCP server (`pip install "cleo-sql[gguf,mcp]"`), so
-any agent gets a natural-language `query_database` tool. Claude Code / Claude Desktop config:
+`cleo mcp --db "$DATABASE_URL"` serves a natural-language `query_database` tool
+(`pip install "cleo-sql[gguf,mcp]"`). Claude Code / Claude Desktop config:
 
 ```json
 "cleo": { "command": "cleo", "args": ["mcp", "--db", "postgresql://..."] }
 ```
 
 ## Install
-Not on PyPI yet — install from the repo:
 
 ```bash
-git clone https://github.com/Dreeseaw/cleo && cd cleo
-pip install -e ".[gguf]"         # llama-cpp-python backend (CPU/Mac/CUDA)
-pip install -e ".[hf]"           # transformers backend (GPU)
+pip install "cleo-sql[gguf]"       # llama-cpp-python backend (CPU/Mac/CUDA)
+pip install "cleo-sql[hf]"         # transformers backend (GPU)
+pip install "cleo-sql[gguf,mcp]"   # MCP server extras
 # Weights download + cache themselves on first use: Cleo.from_gguf() pulls the current champion
-# Q8_0 GGUF (bf16-parity) from HF (private — `hf auth login` first); same for Cleo.from_hf().
+# Q8_0 GGUF (bf16 parity) from HF. If the repo is private, run `hf auth login` first.
 ```
 
 Run the tests (no model/GPU needed): `pip install -e ".[test]" && pytest`
 
 ## API
-- `Cleo.from_gguf(path=None, *, n_ctx=4096, n_threads=8, n_gpu_layers=0)` — no path downloads/caches the current champion
+- `Cleo.from_gguf(path=None, *, n_ctx=4096, n_threads=8, n_gpu_layers=0)`: no path downloads/caches the current champion
 - `Cleo.from_hf(model="dreeseaw/cleo", *, device=None)`
-- `cleo.ask(question, conn, *, schema=None, tables=None, max_gather=3, max_repair=2, execute_final=True, row_limit=1000, dialect=None, schema_fks=False, schema_samples=0) -> Answer` — `dialect` auto-detects from the connection; model SQL is transpiled from DuckDB; failed finals self-repair from the DB error up to `max_repair` times.
-- `Answer(sql, rows, columns, clarification, gathers, discovered, error)` — truthy when answered.
+- `cleo.ask(question, conn, *, schema=None, tables=None, max_gather=3, max_repair=2, execute_final=True, row_limit=1000, dialect=None, schema_fks=False, schema_samples=0) -> Answer`: auto-detects dialect, transpiles from DuckDB SQL, and retries failed finals up to `max_repair`.
+- `Answer(sql, rows, columns, clarification, gathers, discovered, error)`: truthy when answered.

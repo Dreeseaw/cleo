@@ -1,6 +1,6 @@
 """Tests for the cleo package. Run: `pytest` (or `python tests/test_cleo.py`).
 
-No model/GPU needed — `Cleo(backend=FakeBackend(...))` injects scripted model output.
+No model or GPU needed. `Cleo(backend=FakeBackend(...))` injects scripted model output.
 """
 import sqlite3
 import sys

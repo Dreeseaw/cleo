@@ -1,7 +1,7 @@
-"""Cleo — a tool-using SQL analyst you point at your own database connection.
+"""A tool-using SQL analyst for your own database connection.
 
     from cleo import Cleo
-    cleo = Cleo.from_gguf()   # downloads + caches the current champion (or pass a local GGUF path)
+    cleo = Cleo.from_gguf()   # downloads and caches the current champion
     ans = cleo.ask("How many employees are currently in each department?", conn)
     if ans.ok:
         print(ans.sql, ans.rows)
@@ -22,12 +22,10 @@ from .db import MODEL_DIALECT, detect_dialect, introspect_schema, make_executor,
 
 @dataclass
 class Answer:
-    """Result of `Cleo.ask`. Exactly one of (sql, clarification, error) is the outcome.
+    """Result from `Cleo.ask`.
 
-    `bool(answer)` and `.ok` are True only on a successful SQL answer. A clarification is not an "answer":
-    handle it via `status == "clarify"`. `.status` is one of "ok" | "clarify" | "error" | "empty".
-    `rows`/`columns` are populated only for a successful sql answer with execute_final=True (and
-    `rows == []` means the query executed and returned no rows).
+    `.ok` and `bool(answer)` are true only for a SQL answer. Clarifications use
+    `status == "clarify"`. Errors use `status == "error"`.
     """
     sql: str | None = None
     rows: list | None = None
@@ -51,7 +49,7 @@ class Answer:
 
     @property
     def discovered(self) -> list:
-        """Distinct short string values Cleo saw while probing (derived from `gathers`)."""
+        """Short string values Cleo saw while probing."""
         seen: dict = {}
         for _sql, _cols, rows in self.gathers:
             for row in rows or []:
@@ -73,7 +71,7 @@ class Cleo:
     @classmethod
     def from_gguf(cls, model_path: str | None = None, *, n_ctx: int = 4096, n_threads: int = 8,
                   n_gpu_layers: int = 0, **kw) -> "Cleo":
-        """No `model_path` -> download (or reuse the cached copy of) the current champion from HF."""
+        """Create a GGUF-backed Cleo. No path means download or reuse the cached default."""
         from . import backends
         if model_path is None:
             model_path = backends.download_gguf()
@@ -93,16 +91,13 @@ class Cleo:
             max_new_tokens: int = 256) -> Answer:
         """Answer `question` against `conn` (a DB-API 2.0 connection or an executor callable).
 
-        Cleo probes the data read-only to discover real values, then returns final SQL (and runs it,
-        capped at `row_limit`, unless execute_final=False). Pass `schema=` to skip introspection, or
-        `tables=[...]` / `db_schema=` to scope a large database.
+        Cleo may probe the data read-only, then returns final SQL and optionally runs it.
+        Pass `schema=` to skip introspection. Use `tables=` or `db_schema=` to scope large DBs.
 
-        Cleo writes DuckDB-flavored SQL; the harness transpiles it to the connection's dialect before
-        executing. `dialect` is auto-detected from the connection (sqlite/postgres/mysql/duckdb); pass it
-        explicitly to override, or when using a bare executor callable.
+        Model SQL starts as DuckDB and is transpiled to the target dialect before execution.
+        Pass `dialect=` to override auto-detection or when using a bare executor callable.
 
-        Raises ValueError/TypeError for *setup* problems (no conn, autocommit conn, too many tables with
-        no scoping). Model/DB *runtime* outcomes are returned on `Answer.error` — check `ans.ok`.
+        Setup problems raise. Model or DB runtime failures are returned on `Answer.error`.
         """
         if conn is None:
             raise ValueError("ask() needs a connection or executor as the second argument")
@@ -164,7 +159,7 @@ class Cleo:
             if execute_final:
                 cols, rows, trunc, err = run_readonly(executor, act["sql"], limit=row_limit, dialect=dialect)
                 if err:
-                    # self-repair: surface the DB error (as a familiar error observation) and let it retry
+                    # Surface the DB error as an observation so the model can repair it.
                     if n_repair < max_repair:
                         n_repair += 1
                         observations.append((act["sql"], f"ERROR: {err}"))

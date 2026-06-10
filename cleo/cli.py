@@ -1,11 +1,10 @@
-"""Command-line Cleo: ask one question, or serve Cleo as an MCP tool.
+"""Ask one question from the shell, or serve Cleo as an MCP tool.
 
     cleo "total revenue by region" --db warehouse.duckdb
     cleo "active users this week?" --db postgresql://me@host/db --tables users,sessions --json
     cleo mcp --db "$DATABASE_URL"        # MCP server (pip install "cleo-sql[gguf,mcp]")
 
-Weights default to the current champion GGUF on HF — downloaded once, cached, picked up
-automatically when a new champion ships. Pass --model to use a local GGUF instead.
+By default, Cleo downloads and caches the current GGUF from HF. Pass --model for a local file.
 """
 from __future__ import annotations
 
@@ -52,10 +51,7 @@ def _serve_mcp(args) -> None:
 
     @server.tool()
     def query_database(question: str, tables: list[str] | None = None) -> dict:
-        """Answer a natural-language question about the database with read-only SQL.
-
-        Optionally pass `tables` to scope a large schema. Returns the generated SQL and its result rows.
-        """
+        """Answer a database question with read-only SQL. Use `tables` to scope large schemas."""
         return _answer(cleo, args.db, question, tables)
 
     server.run()

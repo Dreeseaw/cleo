@@ -1,22 +1,19 @@
-"""Generation backends. Heavy deps (torch / llama-cpp-python) are imported lazily so `import cleo`
-is cheap and you only pay for the backend you use."""
+"""Generation backends with lazy heavy imports."""
 from __future__ import annotations
 
 DEFAULT_REPO = "dreeseaw/cleo"
-DEFAULT_GGUF = "cleo-Q8_0.gguf"   # stable alias on HF: always the current champion quant
+DEFAULT_GGUF = "cleo-Q8_0.gguf"   # stable HF alias for the current champion quant
 
 
 def download_gguf(repo_id: str = DEFAULT_REPO, filename: str = DEFAULT_GGUF,
                   revision: str | None = None) -> str:
-    """Fetch the champion GGUF from HF and return its local path. The download is etag-cached:
-    repeat calls reuse the cache and pick up a newly shipped champion automatically; pass
-    `revision=` to pin."""
+    """Download or reuse the cached default GGUF and return its local path."""
     from huggingface_hub import hf_hub_download
     return hf_hub_download(repo_id, filename, revision=revision)
 
 
 class GGUFBackend:
-    """llama-cpp-python backend (CPU or GPU). The lightweight default for laptops / MCP servers."""
+    """llama-cpp-python backend for CPU or GPU use."""
 
     def __init__(self, model_path: str, n_ctx: int = 4096, n_threads: int = 8, n_gpu_layers: int = 0):
         from llama_cpp import Llama

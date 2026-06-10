@@ -1,16 +1,15 @@
-"""The Cleo action contract — prompt format, action parsing, read-only guard, observation rendering.
+"""Cleo's action contract: prompts, parsing, SQL guard, and observations.
 
-These are byte-faithful to how Cleo v1.0 was trained/evaluated. Do not "improve" the prompt strings or
-the observation format: the model's accuracy depends on seeing exactly this at inference. (A test asserts
-INSTRUCTION matches the training harness.) Pure module — no DB, no model deps.
+Keep these strings byte-faithful to training. Model accuracy depends on the exact prompt
+and observation format. This module has no DB or model dependencies.
 """
 from __future__ import annotations
 
 import json
 import re
 
-# INSTRUCTION is byte-identical to the training/eval harness (tooluse/env.py). The "When a gather
-# reveals..." sentence is load-bearing — it is what tells the model to bind the EXACT discovered value.
+# INSTRUCTION is byte-identical to the training/eval harness. The "When a gather reveals..."
+# sentence teaches the model to bind the exact discovered value.
 INSTRUCTION = """You are a SQL analyst agent with tools. Before answering you MAY inspect the data to discover real column values, codes, or domain conventions you are unsure about (e.g. how "current"/"active"/"completed" is actually encoded).
 
 Respond with EXACTLY one JSON object, nothing else:
@@ -29,7 +28,7 @@ _DESTRUCTIVE_RE = re.compile(
     r"\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|TRUNCATE|VACUUM|ATTACH|DETACH|PRAGMA|COPY|CALL|GRANT|REVOKE)\b",
     re.I,
 )
-# Functions whose effect is a write / file read / network / DoS even inside a SELECT — denied by name.
+# Functions with write, file, network, or sleep side effects are denied by name.
 _SIDE_EFFECT_FUNCS = frozenset({
     "pg_read_file", "pg_read_binary_file", "pg_ls_dir", "pg_stat_file", "pg_read_server_files",
     "lo_import", "lo_export", "lo_get", "lo_put",
@@ -47,7 +46,7 @@ def parse_action(text: str) -> dict | None:
     i = s.find("{")
     if i < 0:
         return None
-    try:  # JSONDecoder parses one object and ignores trailing tokens — no scan loop needed
+    try:  # JSONDecoder parses one object and ignores trailing tokens.
         obj, _ = json.JSONDecoder().raw_decode(s, i)
     except Exception:
         return None
@@ -57,8 +56,7 @@ def parse_action(text: str) -> dict | None:
 def normalize_action(obj: dict | None) -> dict | None:
     """-> {'kind':'gather'|'final','sql':..} | {'kind':'final','clarify':..} | None.
 
-    A `tool` key that isn't gather/final is invalid (returns None) — matches the training harness, which
-    only falls back to the bare single-shot contract when there is NO `tool` key at all.
+    Unknown `tool` values are invalid. Missing `tool` means the bare single-shot final contract.
     """
     if not isinstance(obj, dict):
         return None
@@ -91,7 +89,7 @@ def is_readonly(sql: str, dialect: str | None = "duckdb") -> tuple[bool, str | N
         import sqlglot
         from sqlglot import exp
     except Exception:
-        return False, "no_sql_parser"  # fail closed — never run unparsed SQL against a real DB
+        return False, "no_sql_parser"  # fail closed
     parsed = None
     for read in (dialect, None):
         try:

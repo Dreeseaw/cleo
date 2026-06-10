@@ -1,12 +1,10 @@
-"""Connection-agnostic, read-only SQL execution + live schema introspection.
+"""Read-only SQL execution and live schema introspection.
 
-Cleo runs against *your* DB-API 2.0 connection — psycopg2 / sqlite3 / duckdb / a SQLAlchemy
-`raw_connection()`. Supported dialects: Postgres, MySQL, SQLite, DuckDB (the `LIMIT` row-cap and
-`information_schema`/`PRAGMA` introspection do not cover Oracle/SQL Server).
+Cleo runs against your DB-API 2.0 connection: psycopg2, sqlite3, duckdb, or a SQLAlchemy
+`raw_connection()`. Supported dialects: Postgres, MySQL, SQLite, and DuckDB.
 
-Read-only is enforced primarily by the SQL guard in `contract.is_readonly` (statement + AST + side-effect
-function denylist). For production, ALSO run Cleo under a least-privilege, read-only DB role with a
-statement timeout — the in-process guard is defense-in-depth, not a substitute for DB permissions.
+The SQL guard blocks writes and common side-effect functions. For production, still use a
+least-privilege, read-only DB role with a statement timeout.
 """
 from __future__ import annotations
 
@@ -20,8 +18,7 @@ from .contract import is_readonly
 # An executor maps (sql, limit) -> (columns, rows, truncated).
 Executor = Callable[[str, int], "tuple[list, list, bool]"]
 
-# Cleo is trained to write DuckDB-flavored SQL. The harness TRANSPILES it to the connection's dialect
-# before executing, so the model's native output runs correctly against SQLite/Postgres/MySQL/etc.
+# Cleo writes DuckDB SQL. Transpile it before execution when the target DB differs.
 MODEL_DIALECT = "duckdb"
 _DRIVER_DIALECT = {"sqlite3": "sqlite", "psycopg2": "postgres", "psycopg": "postgres",
                    "duckdb": "duckdb", "pymysql": "mysql", "mysql": "mysql",
@@ -33,13 +30,13 @@ _STMT_TIMEOUT_MS = 15000
 
 
 def detect_dialect(conn: Any) -> str:
-    """Best-effort: map a DB-API connection to a sqlglot dialect (falls back to the model's own)."""
+    """Map a DB-API connection to a sqlglot dialect, falling back to DuckDB."""
     mod = type(conn).__module__.split(".")[0]
     return _DRIVER_DIALECT.get(mod, MODEL_DIALECT)
 
 
 def transpile_sql(sql: str, target: str | None, source: str = MODEL_DIALECT) -> str:
-    """Translate the model's `source`-dialect SQL to the connection's `target` dialect (best-effort)."""
+    """Best-effort SQL translation from the model dialect to the target dialect."""
     if not target or target == source:
         return sql
     try:
@@ -47,7 +44,7 @@ def transpile_sql(sql: str, target: str | None, source: str = MODEL_DIALECT) -> 
         out = sqlglot.transpile(sql, read=source, write=target)
         return out[0] if out else sql
     except Exception:
-        return sql  # if it won't transpile, run as-is and let the DB report the error
+        return sql  # let the DB report the error if translation fails
 
 
 def _quiet(fn) -> None:
@@ -80,10 +77,10 @@ def _is_autocommit(conn: Any) -> bool:
 
 
 def make_executor(source: Any) -> Executor:
-    """A DB-API 2.0 connection OR a callable `(sql, limit) -> (columns, rows, truncated)` -> read-only executor.
+    """Create a read-only executor from a DB-API connection or executor callable.
 
-    The connection should be dedicated to Cleo and NOT in autocommit (Cleo relies on rollback to leave no
-    trace); a query is also wrapped read-only and capped. SQLAlchemy: pass `engine.raw_connection()`.
+    Use a non-autocommit connection dedicated to Cleo. SQLAlchemy users can pass
+    `engine.raw_connection()`.
     """
     if callable(source) and not hasattr(source, "cursor"):
         return source
@@ -104,7 +101,7 @@ def make_executor(source: Any) -> Executor:
             rows = [[_normalize_cell(c) for c in row] for row in fetched]
             return columns, rows[:limit], len(rows) > limit
         finally:
-            _quiet(source.rollback)  # never commit — Cleo is read-only
+            _quiet(source.rollback)  # never commit
             _quiet(cur.close)
 
     return execute
@@ -112,11 +109,7 @@ def make_executor(source: Any) -> Executor:
 
 def run_readonly(executor: Executor, sql: str, limit: int = 20,
                  dialect: str | None = MODEL_DIALECT) -> tuple[list, list, bool, str | None]:
-    """Guard the model's SQL (read-only), TRANSPILE it from DuckDB to the connection's `dialect`, run it.
-
-    Returns (columns, rows, truncated, error). The guard parses the model's native DuckDB; the transpiled
-    SQL is what executes — so a DuckDB-trained model runs correctly against SQLite/Postgres/etc.
-    """
+    """Validate, transpile, and run read-only SQL. Returns columns, rows, truncated, error."""
     ok, why = is_readonly(sql, dialect=MODEL_DIALECT)
     if not ok:
         return [], [], False, f"rejected ({why})"
@@ -133,23 +126,17 @@ def _quote_ident(name: str) -> str:
 
 
 def _ddl_ident(name: str) -> str:
-    """Render an identifier as it must be written in SQL: quoted iff it needs quoting.
-
-    Schema text is what the model copies identifiers from — rendering `Examination Date` or `T-CHO`
-    unquoted teaches it to write unparseable SQL against real-world schemas.
-    """
+    """Render an identifier for SQL, quoting only when needed."""
     s = str(name)
     return s if _IDENT_RE.match(s) else _quote_ident(s)
 
 
 def introspect_schema(source: Any, tables: list[str] | None = None, db_schema: str | None = None,
                       max_tables: int = 60, fks: bool = False, samples: int = 0) -> str:
-    """Build CREATE TABLE DDL from a live connection. Scope big DBs with `tables=[...]` / `db_schema=`.
+    """Build CREATE TABLE DDL from a live connection.
 
-    Tries ANSI `information_schema.columns` (Postgres/MySQL/DuckDB); falls back to SQLite `PRAGMA`. Raises
-    if there are more than `max_tables` tables and no scoping was given (rather than silently truncating).
-    `fks=True` appends foreign-key relationships (SQLite); `samples=N` appends N example rows per table —
-    both help the model ground columns to the right table.
+    Uses `information_schema` when available, then SQLite PRAGMA. Scope large DBs with
+    `tables=` or `db_schema=`. `fks=True` and `samples=N` add optional grounding hints.
     """
     if not hasattr(source, "cursor"):
         raise TypeError("schema introspection needs a DB-API connection; pass schema=... instead")
@@ -209,7 +196,7 @@ def _table_samples(source: Any, table: str, n: int) -> str:
 
 
 def _introspect_ansi(cur: Any, want: set[str] | None, db_schema: str | None) -> dict | None:
-    """information_schema path. Returns None (to trigger the SQLite fallback) if it isn't available."""
+    """Use information_schema, or return None so SQLite PRAGMA can try next."""
     where = "lower(table_schema) NOT IN ({})".format(", ".join("'%s'" % s for s in _SYS_SCHEMAS))
     if db_schema:
         if not _IDENT_RE.match(db_schema):  # validated -> safe to inline (no driver-paramstyle guessing)
