@@ -1,7 +1,7 @@
 """Cleo — a tool-using SQL analyst you point at your own database connection.
 
     from cleo import Cleo
-    cleo = Cleo.from_gguf("cleo_v1_0-no_mtp-Q8_0.gguf")
+    cleo = Cleo.from_gguf("cleo_v1_2_bird-no_mtp-Q8_0.gguf")
     ans = cleo.ask("How many employees are currently in each department?", conn)
     if ans.ok:
         print(ans.sql, ans.rows)

@@ -15,7 +15,7 @@ from mcp.server.fastmcp import FastMCP
 
 from cleo import Cleo
 
-cleo = Cleo.from_gguf(os.environ.get("CLEO_GGUF", "cleo_v1_0-no_mtp-Q8_0.gguf"))
+cleo = Cleo.from_gguf(os.environ.get("CLEO_GGUF", "cleo_v1_2_bird-no_mtp-Q8_0.gguf"))
 DSN = os.environ["DATABASE_URL"]
 
 mcp = FastMCP("cleo")

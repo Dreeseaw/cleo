@@ -11,7 +11,7 @@ No server, no pre-staging. Hand it a live DB-API connection and ask:
 from cleo import Cleo
 import psycopg2
 
-cleo = Cleo.from_gguf("cleo_v1_0-no_mtp-Q8_0.gguf")     # CPU-friendly; or Cleo.from_hf("dreeseaw/cleo")
+cleo = Cleo.from_gguf("cleo_v1_2_bird-no_mtp-Q8_0.gguf")     # CPU-friendly; or Cleo.from_hf("dreeseaw/cleo")
 conn = psycopg2.connect("postgresql://...")            # your existing connection — Postgres, SQLite, DuckDB, ...
 
 ans = cleo.ask("How many employees are currently in each department?", conn)
@@ -48,7 +48,7 @@ git clone https://github.com/Dreeseaw/cleo && cd cleo
 pip install -e ".[gguf]"         # llama-cpp-python backend (CPU/Mac/CUDA)
 pip install -e ".[hf]"           # transformers backend (GPU)
 # HF weights (private): Cleo.from_hf("dreeseaw/cleo") pulls the current champion automatically
-# GGUF (still v1.0; v1.2 not yet quantized): hf download dreeseaw/cleo cleo_v1_0-no_mtp-Q8_0.gguf --local-dir .
+# GGUF (v1.2 Q8_0, bf16-parity): hf download dreeseaw/cleo cleo_v1_2_bird-no_mtp-Q8_0.gguf --local-dir .
 ```
 
 Run the tests (no model/GPU needed): `pip install -e ".[test]" && pytest`
@@ -57,6 +57,7 @@ Run the tests (no model/GPU needed): `pip install -e ".[test]" && pytest`
 - **main = v1.2-bird** (2026-06-10): BIRD-repair distillation champion — BIRD-minidev 30.65%
   (434, same-harness), VD 57.6%, exec-error rate 12.7%. Best with `ask(..., max_repair=2,
   schema_fks=True)` (needs this package version for the repair loop + quoted-DDL introspection).
+  GGUF cut: `cleo_v1_2_bird-no_mtp-Q8_0.gguf` (Q8 verified VD 59.1% = bf16 parity; Q4 erodes the deltas).
 - `revision="v0.9"`: original single-shot SFT model.
 
 ## API
