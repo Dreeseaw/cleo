@@ -1,9 +1,9 @@
 # cleo
 
-A small (~2B) **tool-using SQL analyst** you point at your own database connection. Cleo probes the data
-read-only to **discover real values, codes, and conventions** (e.g. that *"current"* means
-`to_date = '9999-01-01'`, or status `'O'` not `'open'`) **before** writing its answer — the thing a
-one-shot text-to-SQL model can't do because it has to guess the literal.
+A unified micro-harness + fine-tuned Qwen3.5-2B (a "hardel") for SQL-based analytical workflows 
+that you point at your own database connections. Cleo's been trained on probing the data read-only to 
+**discover real values, codes, and conventions** deep in the data, **repair broken queries** in-flight, 
+and treat clarity & observability as first-class features.
 
 No server, no pre-staging. Hand it a live DB-API connection and ask:
 
@@ -11,8 +11,8 @@ No server, no pre-staging. Hand it a live DB-API connection and ask:
 from cleo import Cleo
 import psycopg2
 
-cleo = Cleo.from_gguf()   # downloads + caches the current champion (CPU-friendly); or Cleo.from_hf(...)
-conn = psycopg2.connect("postgresql://...")            # your existing connection — Postgres, SQLite, DuckDB, ...
+cleo = Cleo.from_gguf()   # downloads + caches model (CPU-friendly); or Cleo.from_hf(...)
+conn = psycopg2.connect("postgresql://...") # your existing connection — Postgres, SQLite, DuckDB, ...
 
 ans = cleo.ask("How many employees are currently in each department?", conn)
 print(ans.sql)            # the final read-only SELECT
@@ -63,18 +63,8 @@ pip install -e ".[hf]"           # transformers backend (GPU)
 
 Run the tests (no model/GPU needed): `pip install -e ".[test]" && pytest`
 
-## Model versions (HF `dreeseaw/cleo`)
-- **main = v1.2-bird** (2026-06-10): BIRD-repair distillation champion — BIRD-minidev 30.65%
-  (434, same-harness), VD 57.6%, exec-error rate 12.7%. Best with `ask(..., max_repair=2,
-  schema_fks=True)` (needs this package version for the repair loop + quoted-DDL introspection).
-  GGUF cut: `cleo_v1_2_bird-no_mtp-Q8_0.gguf` (Q8 verified VD 59.1% = bf16 parity; Q4 erodes the deltas).
-- `revision="v0.9"`: original single-shot SFT model.
-
 ## API
 - `Cleo.from_gguf(path=None, *, n_ctx=4096, n_threads=8, n_gpu_layers=0)` — no path downloads/caches the current champion
 - `Cleo.from_hf(model="dreeseaw/cleo", *, device=None)`
 - `cleo.ask(question, conn, *, schema=None, tables=None, max_gather=3, max_repair=2, execute_final=True, row_limit=1000, dialect=None, schema_fks=False, schema_samples=0) -> Answer` — `dialect` auto-detects from the connection; model SQL is transpiled from DuckDB; failed finals self-repair from the DB error up to `max_repair` times.
 - `Answer(sql, rows, columns, clarification, gathers, discovered, error)` — truthy when answered.
-
-Trained by behavioral cloning on denotation-verified teacher trajectories. v1.0 beats the one-shot
-baseline on value-discovery (13.6% → 51.5%) and on out-of-distribution databases (59.3% → 64.2%).
