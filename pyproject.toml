@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cleo-sql"
-version = "1.0.0"
+version = "1.2.0"
 description = "A small tool-using SQL analyst that discovers real values in your database before answering."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -13,7 +13,7 @@ dependencies = ["sqlglot>=20,<32"]
 
 [project.optional-dependencies]
 gguf = ["llama-cpp-python>=0.3,<1"]
-hf = ["torch>=2.1", "transformers>=4.45", "huggingface_hub"]
+hf = ["torch>=2.1", "transformers>=5.3", "huggingface_hub"]
 test = ["pytest", "duckdb"]
 
 [project.urls]

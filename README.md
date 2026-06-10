@@ -41,12 +41,17 @@ cleo.ask("...", conn, schema=my_ddl_string)                  # or hand it the DD
 `examples/mcp_tool.py`).
 
 ## Install
+Not on PyPI yet — install from the repo:
+
 ```bash
-pip install "cleo-sql[gguf]"     # llama-cpp-python backend (CPU/Mac/CUDA)
-pip install "cleo-sql[hf]"       # transformers backend (GPU)
+git clone https://github.com/Dreeseaw/cleo && cd cleo
+pip install -e ".[gguf]"         # llama-cpp-python backend (CPU/Mac/CUDA)
+pip install -e ".[hf]"           # transformers backend (GPU)
 # HF weights (private): Cleo.from_hf("dreeseaw/cleo") pulls the current champion automatically
 # GGUF (still v1.0; v1.2 not yet quantized): hf download dreeseaw/cleo cleo_v1_0-no_mtp-Q8_0.gguf --local-dir .
 ```
+
+Run the tests (no model/GPU needed): `pip install -e ".[test]" && pytest`
 
 ## Model versions (HF `dreeseaw/cleo`)
 - **main = v1.2-bird** (2026-06-10): BIRD-repair distillation champion — BIRD-minidev 30.65%

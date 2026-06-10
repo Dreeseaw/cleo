@@ -101,6 +101,17 @@ def test_introspect_sqlite():
     assert "CREATE TABLE orders" in schema and "status" in schema
 
 
+def test_introspect_ansi_information_schema():
+    # DuckDB exercises the ANSI information_schema path (SQLite above covers the PRAGMA fallback)
+    import duckdb
+    con = duckdb.connect(":memory:")
+    con.execute("CREATE TABLE emp (id INTEGER, \"Hire Date\" DATE)")
+    schema = introspect_schema(con)
+    assert "CREATE TABLE emp" in schema
+    assert '"Hire Date"' in schema      # needs-quoting identifiers are rendered quoted in the DDL
+    assert detect_dialect(con) == "duckdb"
+
+
 def test_dialect_detect_and_transpile():
     assert detect_dialect(_orders_db()) == "sqlite"
     # DuckDB STRFTIME(date, fmt) has the args in the OPPOSITE order from SQLite STRFTIME(fmt, date)

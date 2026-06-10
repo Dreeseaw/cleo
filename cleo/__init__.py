@@ -8,4 +8,4 @@
 from .agent import Answer, Cleo
 
 __all__ = ["Cleo", "Answer"]
-__version__ = "1.0.0"
+__version__ = "1.2.0"
