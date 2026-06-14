@@ -12,6 +12,7 @@
 """
 from __future__ import annotations
 
+import json
 import threading
 from dataclasses import dataclass, field
 from typing import Any
@@ -34,6 +35,12 @@ class Answer:
     gathers: list = field(default_factory=list)   # [(gather_sql, columns|None, rows|None), ...]
     error: str | None = None
     raw: str | None = None                         # last raw model output (debugging)
+    terminal_contract_sentinel_enabled: bool = False
+    terminal_contract_sentinel_fired: bool = False
+    terminal_contract_sentinel_observation_appended: bool = False
+    post_sentinel_generation_count: int = 0
+    post_sentinel_gather_rejected: bool = False
+    post_sentinel_sql_blocked: bool = False
 
     @property
     def ok(self) -> bool:
@@ -88,7 +95,9 @@ class Cleo:
             max_gather: int | None = None, max_repair: int = 2, execute_final: bool = True,
             row_limit: int = 1000, dialect: str | None = None,
             schema_fks: bool = False, schema_samples: int = 0,
-            max_new_tokens: int = 256) -> Answer:
+            max_new_tokens: int = 256, enable_gather_many: bool = False,
+            verifier_repair_context: bool = False, typed_repair_controller: bool = False,
+            terminal_contract_sentinel: bool = False) -> Answer:
         """Answer `question` against `conn` (a DB-API 2.0 connection or an executor callable).
 
         Cleo may probe the data read-only, then returns final SQL and optionally runs it.
@@ -116,21 +125,67 @@ class Cleo:
         n_repair = 0
         max_steps = max_gather + 1 + max_repair
         last = None
-        for step in range(max_steps):
+        sentinel_fired = False
+        sentinel_observation_appended = False
+        post_sentinel_generation_count = 0
+        post_sentinel_gather_rejected = False
+        post_sentinel_sql_blocked = False
+
+        def _answer(**kwargs) -> Answer:
+            return Answer(
+                **kwargs,
+                terminal_contract_sentinel_enabled=terminal_contract_sentinel,
+                terminal_contract_sentinel_fired=sentinel_fired,
+                terminal_contract_sentinel_observation_appended=sentinel_observation_appended,
+                post_sentinel_generation_count=post_sentinel_generation_count,
+                post_sentinel_gather_rejected=post_sentinel_gather_rejected,
+                post_sentinel_sql_blocked=post_sentinel_sql_blocked,
+            )
+
+        def _fire_sentinel() -> bool:
+            nonlocal sentinel_fired, sentinel_observation_appended
+            if not terminal_contract_sentinel or sentinel_fired:
+                return False
+            sentinel_fired = True
+            sentinel_observation_appended = True
+            observations.append((contract.TERMINAL_CONTRACT_LABEL, contract.TERMINAL_CONTRACT_OBSERVATION))
+            return True
+
+        def _no_answer(**kwargs) -> Answer | None:
+            if _fire_sentinel():
+                return None
+            return _answer(error="no_answer", gathers=gather_log, **kwargs)
+
+        step = 0
+        while step < max_steps or (
+            terminal_contract_sentinel and sentinel_fired and post_sentinel_generation_count == 0
+        ):
             prompt = contract.render_prompt(schema, question, observations,
                                             gathers_left=max_gather - n_gather,
-                                            steps_left=max_steps - step)
+                                            steps_left=max_steps - step,
+                                            enable_gather_many=enable_gather_many)
+            step += 1
             last = self._generate(prompt, max_new_tokens)
             act = contract.normalize_action(contract.parse_action(last))
+            post_sentinel = sentinel_fired and post_sentinel_generation_count == 0
+            if post_sentinel:
+                post_sentinel_generation_count += 1
 
             if act is None:
+                if post_sentinel:
+                    return _answer(error="no_answer", gathers=gather_log, raw=last)
                 n_bad += 1
                 observations.append(("<invalid>", "ERROR: could not parse a valid JSON action."))
                 if n_bad >= 2 or len(observations) >= max_steps:
-                    return Answer(error="no_answer", gathers=gather_log, raw=last)
+                    ans = _no_answer(raw=last)
+                    if ans is not None:
+                        return ans
                 continue
 
             if act["kind"] == "gather":
+                if post_sentinel:
+                    post_sentinel_gather_rejected = True
+                    return _answer(error="no_answer", gathers=gather_log, raw=last)
                 ok, why = contract.is_readonly(act["sql"], dialect=MODEL_DIALECT)
                 if not ok or n_gather >= max_gather:
                     n_bad += 1
@@ -138,7 +193,9 @@ class Cleo:
                     observations.append((act["sql"], f"ERROR: gather rejected ({reason})."))
                     gather_log.append((act["sql"], None, None))
                     if len(observations) >= max_steps:
-                        return Answer(error="no_answer", gathers=gather_log, raw=last)
+                        ans = _no_answer(raw=last)
+                        if ans is not None:
+                            return ans
                     continue
                 cols, rows, trunc, err = run_readonly(executor, act["sql"], limit=20, dialect=dialect)
                 n_gather += 1
@@ -149,27 +206,95 @@ class Cleo:
                     observations.append((act["sql"], contract.format_observation(cols, rows, trunc)))
                     gather_log.append((act["sql"], cols, rows))
                 if len(observations) >= max_steps:
-                    return Answer(error="no_answer", gathers=gather_log, raw=last)
+                    ans = _no_answer(raw=last)
+                    if ans is not None:
+                        return ans
+                continue
+
+            if act["kind"] == "gather_many":
+                if post_sentinel:
+                    post_sentinel_gather_rejected = True
+                    return _answer(error="no_answer", gathers=gather_log, raw=last)
+                queries = act.get("queries") or []
+                label = "gather_many " + json.dumps([q.get("sql", "") for q in queries], ensure_ascii=False)
+                if not enable_gather_many:
+                    n_bad += 1
+                    observations.append((label, "ERROR: gather_many rejected (disabled)."))
+                elif not (1 <= len(queries) <= 3):
+                    n_bad += 1
+                    observations.append((label, "ERROR: gather_many rejected (query_count)."))
+                elif n_gather + len(queries) > max_gather:
+                    n_bad += 1
+                    observations.append((label, "ERROR: gather_many rejected (gather budget exhausted)."))
+                else:
+                    results = []
+                    for i, q in enumerate(queries, 1):
+                        sql = q["sql"]
+                        ok, why = contract.is_readonly(sql, dialect=MODEL_DIALECT)
+                        if not ok:
+                            n_bad += 1
+                            results.append({"index": i, "error": f"rejected ({why})"})
+                            gather_log.append((sql, None, None))
+                            continue
+                        cols, rows, trunc, err = run_readonly(executor, sql, limit=20, dialect=dialect)
+                        n_gather += 1
+                        if err:
+                            results.append({"index": i, "error": err})
+                            gather_log.append((sql, None, None))
+                        else:
+                            results.append({"index": i, "cols": cols, "rows": rows, "truncated": trunc})
+                            gather_log.append((sql, cols, rows))
+                    observations.append((label, contract.format_many_observation(results)))
+                if len(observations) >= max_steps:
+                    ans = _no_answer(raw=last)
+                    if ans is not None:
+                        return ans
                 continue
 
             # final
             if "clarify" in act:
-                return Answer(clarification=act["clarify"], gathers=gather_log, raw=last)
-            ans = Answer(sql=act["sql"], gathers=gather_log, raw=last)
+                if post_sentinel:
+                    return _answer(error="no_answer", gathers=gather_log, raw=last)
+                return _answer(clarification=act["clarify"], gathers=gather_log, raw=last)
+            if post_sentinel:
+                ok, _why = contract.is_readonly(act["sql"], dialect=MODEL_DIALECT)
+                if not ok:
+                    post_sentinel_sql_blocked = True
+                    return _answer(error="no_answer", gathers=gather_log, raw=last)
+            ans = _answer(sql=act["sql"], gathers=gather_log, raw=last)
             if execute_final:
                 cols, rows, trunc, err = run_readonly(executor, act["sql"], limit=row_limit, dialect=dialect)
                 if err:
                     # Surface the DB error as an observation so the model can repair it.
                     if n_repair < max_repair:
+                        if typed_repair_controller:
+                            repaired = contract.typed_repair_candidate(schema, act["sql"], err, question)
+                            if repaired:
+                                rcols, rrows, _rtrunc, rerr = run_readonly(
+                                    executor, repaired["sql"], limit=row_limit, dialect=dialect
+                                )
+                                if rerr is None:
+                                    return _answer(
+                                        sql=repaired["sql"], columns=rcols, rows=rrows,
+                                        gathers=gather_log, raw=last,
+                                    )
                         n_repair += 1
-                        observations.append((act["sql"], f"ERROR: {err}"))
+                        obs = (
+                            contract.format_repair_observation(schema, act["sql"], err)
+                            if verifier_repair_context
+                            else f"ERROR: {err}"
+                        )
+                        observations.append((act["sql"], obs))
                         gather_log.append((act["sql"], None, None))
                         continue
                     ans.error = err
                 else:
                     ans.columns, ans.rows = cols, rows
             return ans
-        return Answer(error="no_answer", gathers=gather_log, raw=last)
+        ans = _no_answer(raw=last)
+        if ans is not None:
+            return ans
+        return _answer(error="no_answer", gathers=gather_log, raw=last)
 
     def _generate(self, prompt: str, max_new_tokens: int) -> str:
         with self._lock:

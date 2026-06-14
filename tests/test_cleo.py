@@ -9,8 +9,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from cleo import Answer, Cleo
-from cleo.contract import (INSTRUCTION, format_observation, is_readonly, normalize_action,
-                           parse_action, render_prompt)
+from cleo.contract import (INSTRUCTION, TERMINAL_CONTRACT_OBSERVATION, format_many_observation,
+                           format_observation, is_readonly, normalize_action, parse_action, render_prompt,
+                           typed_repair_candidate)
 from cleo.db import detect_dialect, introspect_schema, make_executor, run_readonly, transpile_sql
 
 
@@ -30,9 +31,12 @@ def test_parse_action():
 
 def test_normalize_action_rejects_unknown_tool():
     assert normalize_action({"tool": "gather", "sql": "SELECT 1"}) == {"kind": "gather", "sql": "SELECT 1"}
+    assert normalize_action({"tool": "gather_many", "queries": [{"sql": "SELECT 1"}]}) == {
+        "kind": "gather_many", "queries": [{"sql": "SELECT 1"}]}
     assert normalize_action({"sql": "SELECT 1"}) == {"kind": "final", "sql": "SELECT 1"}  # bare contract
     assert normalize_action({"tool": "foo", "sql": "SELECT 1"}) is None                   # fidelity guard
     assert normalize_action({"tool": "gather", "clarify": "x"}) is None
+    assert normalize_action({"tool": "gather_many", "queries": [{"not_sql": "SELECT 1"}]}) is None
 
 
 def test_render_prompt_budget_nudge():
@@ -43,6 +47,11 @@ def test_render_prompt_budget_nudge():
 
 def test_format_observation():
     assert format_observation(["status"], [["O"], ["C"]], False) == 'cols=[\'status\'] rows(2)=[["O"], ["C"]]'
+    obs = format_many_observation([
+        {"index": 1, "cols": ["status"], "rows": [["O"]], "truncated": False},
+        {"index": 2, "error": "boom"},
+    ])
+    assert '"i": 1' in obs and '"cols": ["status"]' in obs and '"error": "boom"' in obs
 
 
 # ---------------------------------------------------------------- read-only guard (security)
@@ -73,6 +82,28 @@ def _orders_db(isolation_level=""):
     con = sqlite3.connect(":memory:", isolation_level=isolation_level)
     con.executescript("CREATE TABLE orders (id INTEGER, region TEXT, status TEXT);"
                       "INSERT INTO orders VALUES (1,'US','C'),(2,'US','O'),(3,'EU','C');")
+    return con
+
+
+def _patients_db():
+    con = sqlite3.connect(":memory:")
+    con.executescript(
+        "CREATE TABLE Patient (ID INTEGER, Birthday TEXT);"
+        "CREATE TABLE Examination (ID INTEGER, Symptoms TEXT);"
+        "INSERT INTO Patient VALUES (1,'2000-01-01'),(2,'2001-01-01');"
+        "INSERT INTO Examination VALUES (1,'pain'),(2,NULL);"
+    )
+    return con
+
+
+def _thrombosis_db():
+    con = sqlite3.connect(":memory:")
+    con.executescript(
+        "CREATE TABLE Patient (ID INTEGER, Birthday TEXT);"
+        "CREATE TABLE Examination (ID INTEGER, RVVT TEXT);"
+        "INSERT INTO Patient VALUES (1,'2000-01-01'),(2,'2010-01-01');"
+        "INSERT INTO Examination VALUES (1,'+'),(2,'-');"
+    )
     return con
 
 
@@ -133,8 +164,10 @@ def test_transpile_makes_duckdb_sql_run_on_sqlite():
 class FakeBackend:
     def __init__(self, scripted):
         self.scripted, self.i = scripted, 0
+        self.prompts = []
 
     def generate(self, prompt, max_new_tokens=256):
+        self.prompts.append(prompt)
         out = self.scripted[min(self.i, len(self.scripted) - 1)]
         self.i += 1
         return out
@@ -151,6 +184,26 @@ def test_full_loop_gather_then_final():
     assert len(ans.gathers) == 1 and "C" in ans.discovered
 
 
+def test_full_loop_gather_many_then_final():
+    cleo = Cleo(FakeBackend([
+        '{"tool":"gather_many","queries":[{"sql":"SELECT DISTINCT status FROM orders"},{"sql":"SELECT DISTINCT region FROM orders"}]}',
+        '{"tool":"final","sql":"SELECT region, COUNT(*) AS n FROM orders WHERE status=\'C\' GROUP BY region"}',
+    ]))
+    ans = cleo.ask("completed orders by region", _orders_db(), enable_gather_many=True)
+    assert ans.ok and sorted(ans.rows) == [["EU", 1], ["US", 1]]
+    assert len(ans.gathers) == 2 and {"C", "O", "EU", "US"}.issubset(set(ans.discovered))
+
+
+def test_gather_many_disabled_by_default():
+    cleo = Cleo(FakeBackend([
+        '{"tool":"gather_many","queries":[{"sql":"SELECT DISTINCT status FROM orders"}]}',
+        '{"tool":"final","sql":"SELECT COUNT(*) FROM orders"}',
+    ]))
+    ans = cleo.ask("q", _orders_db())
+    assert ans.ok and ans.rows == [[3]]
+    assert ans.gathers == []
+
+
 def test_over_budget_gather_is_not_hijacked_as_final():
     # a model that ONLY ever gathers must end in no_answer, never have its probe returned as the answer
     cleo = Cleo(FakeBackend(['{"tool":"gather","sql":"SELECT DISTINCT status FROM orders"}']),
@@ -158,6 +211,67 @@ def test_over_budget_gather_is_not_hijacked_as_final():
     ans = cleo.ask("q", _orders_db())
     assert ans.status == "error" and ans.error == "no_answer"
     assert ans.sql is None
+
+
+def test_terminal_contract_sentinel_default_off_no_answer_unchanged():
+    cleo = Cleo(FakeBackend(['{"tool":"gather","sql":"SELECT DISTINCT status FROM orders"}']),
+                default_max_gather=0)
+    ans = cleo.ask("q", _orders_db(), max_repair=0)
+    assert ans.status == "error"
+    assert ans.error == "no_answer"
+    assert ans.sql is None
+    assert not ans.terminal_contract_sentinel_fired
+
+
+def test_terminal_contract_sentinel_rescues_no_answer_to_valid_sql():
+    backend = FakeBackend([
+        '{"tool":"gather","sql":"SELECT DISTINCT status FROM orders"}',
+        '{"tool":"final","sql":"SELECT COUNT(*) FROM orders"}',
+    ])
+    cleo = Cleo(backend, default_max_gather=0)
+    ans = cleo.ask("q", _orders_db(), max_repair=0, terminal_contract_sentinel=True)
+    assert ans.ok
+    assert ans.rows == [[3]]
+    assert ans.terminal_contract_sentinel_enabled
+    assert ans.terminal_contract_sentinel_fired
+    assert ans.terminal_contract_sentinel_observation_appended
+    assert ans.post_sentinel_generation_count == 1
+    assert TERMINAL_CONTRACT_OBSERVATION in backend.prompts[1]
+
+
+def test_terminal_contract_sentinel_does_not_fire_on_normal_final():
+    cleo = Cleo(FakeBackend(['{"tool":"final","sql":"SELECT COUNT(*) FROM orders"}']))
+    ans = cleo.ask("q", _orders_db(), max_gather=0, max_repair=0, terminal_contract_sentinel=True)
+    assert ans.ok
+    assert ans.rows == [[3]]
+    assert ans.terminal_contract_sentinel_enabled
+    assert not ans.terminal_contract_sentinel_fired
+
+
+def test_terminal_contract_sentinel_rejects_post_sentinel_gather_without_execution():
+    cleo = Cleo(FakeBackend([
+        '{"tool":"gather","sql":"SELECT DISTINCT status FROM orders"}',
+        '{"tool":"gather","sql":"SELECT DISTINCT region FROM orders"}',
+    ]), default_max_gather=0)
+    ans = cleo.ask("q", _orders_db(), max_repair=0, terminal_contract_sentinel=True)
+    assert ans.status == "error"
+    assert ans.error == "no_answer"
+    assert ans.gathers == [("SELECT DISTINCT status FROM orders", None, None)]
+    assert ans.post_sentinel_gather_rejected
+
+
+def test_terminal_contract_sentinel_blocks_post_sentinel_unsafe_sql():
+    cleo = Cleo(FakeBackend([
+        '{"tool":"gather","sql":"SELECT DISTINCT status FROM orders"}',
+        '{"tool":"final","sql":"DELETE FROM orders"}',
+    ]), default_max_gather=0)
+    con = _orders_db()
+    ans = cleo.ask("q", con, max_repair=0, terminal_contract_sentinel=True)
+    assert ans.status == "error"
+    assert ans.error == "no_answer"
+    assert ans.sql is None
+    assert ans.post_sentinel_sql_blocked
+    assert con.execute("SELECT COUNT(*) FROM orders").fetchone()[0] == 3
 
 
 def test_clarify():
@@ -174,6 +288,117 @@ def test_self_repair_recovers_a_failed_final():
     ]))
     ans = cleo.ask("q", _orders_db(), max_gather=0, max_repair=2)
     assert ans.ok and ans.sql == "SELECT region FROM orders", (ans.sql, ans.error)
+
+
+def test_typed_repair_candidate_rewrites_only_where_owner():
+    schema = "CREATE TABLE Patient (ID INTEGER, Birthday TEXT); CREATE TABLE Examination (ID INTEGER, Symptoms TEXT);"
+    sql = (
+        "SELECT COUNT(T1.ID) FROM Patient AS T1 INNER JOIN Examination AS T2 ON T1.ID = T2.ID "
+        "WHERE T1.Symptoms IS NOT NULL"
+    )
+    repaired = typed_repair_candidate(schema, sql, "no such column: T1.Symptoms")
+    assert repaired is not None
+    assert "T2.Symptoms IS NOT NULL" in repaired["sql"]
+
+
+def test_typed_repair_candidate_refuses_projection_rewrite():
+    schema = "CREATE TABLE Patient (ID INTEGER, Birthday TEXT); CREATE TABLE Examination (ID INTEGER, Symptoms TEXT);"
+    sql = "SELECT T1.Symptoms FROM Patient AS T1 INNER JOIN Examination AS T2 ON T1.ID = T2.ID"
+    assert typed_repair_candidate(schema, sql, "no such column: T1.Symptoms") is None
+
+
+def test_typed_repair_candidate_derives_projection_age_from_birthday():
+    schema = "CREATE TABLE Patient (ID INTEGER, Birthday TEXT); CREATE TABLE Examination (ID INTEGER, RVVT TEXT);"
+    sql = (
+        "SELECT T1.ID, T2.age FROM Examination AS T1 INNER JOIN Patient AS T2 ON T1.ID = T2.ID "
+        "WHERE T1.RVVT = '+' AND T2.age = (SELECT CAST(SUBSTR(T2.Birthday, 1, 4) AS INTEGER) "
+        "- CAST(SUBSTR(SUBSTR(T2.Birthday, 5, 2), 1, 4) AS INTEGER) FROM Patient AS T2)"
+    )
+    repaired = typed_repair_candidate(
+        schema,
+        sql,
+        "no such column: T2.age",
+        "State the ID and age of patient with positive degree of coagulation. "
+        "Hint: age refers to SUBTRACT(year(current_timestamp), year(Birthday));",
+    )
+
+    assert repaired is not None
+    assert repaired["provenance"] == "typed_repair_controller:typed_age_from_birthday"
+    assert "T2.age" not in repaired["sql"]
+    assert "STRFTIME(CURRENT_DATE, '%Y')" in repaired["sql"]
+    assert "AND" not in repaired["sql"].split("WHERE", 1)[1]
+
+
+def test_typed_repair_candidate_refuses_age_without_birthday_context():
+    schema = "CREATE TABLE Patient (ID INTEGER, Birthday TEXT); CREATE TABLE Examination (ID INTEGER, RVVT TEXT);"
+    sql = "SELECT T1.ID, T2.age FROM Examination AS T1 INNER JOIN Patient AS T2 ON T1.ID = T2.ID"
+    assert typed_repair_candidate(schema, sql, "no such column: T2.age", "State the patient age.") is None
+
+
+def test_typed_repair_controller_returns_safe_rewrite_without_model_retry():
+    backend = FakeBackend([
+        '{"tool":"final","sql":"SELECT COUNT(T1.ID) FROM Patient AS T1 INNER JOIN Examination AS T2 '
+        'ON T1.ID = T2.ID WHERE T1.Symptoms IS NOT NULL"}',
+        '{"tool":"final","sql":"SELECT 999"}',
+    ])
+    cleo = Cleo(backend)
+    schema = "CREATE TABLE Patient (ID INTEGER, Birthday TEXT); CREATE TABLE Examination (ID INTEGER, Symptoms TEXT);"
+    ans = cleo.ask(
+        "How many patients have symptoms?",
+        _patients_db(),
+        schema=schema,
+        max_gather=0,
+        max_repair=1,
+        typed_repair_controller=True,
+    )
+    assert ans.ok
+    assert ans.rows == [[1]]
+    assert "T2.Symptoms IS NOT NULL" in ans.sql
+    assert len(backend.prompts) == 1
+
+
+def test_typed_repair_controller_returns_age_from_birthday_without_model_retry():
+    backend = FakeBackend([
+        '{"tool":"final","sql":"SELECT T1.ID, T2.age FROM Examination AS T1 INNER JOIN Patient AS T2 '
+        "ON T1.ID = T2.ID WHERE T1.RVVT = '+' AND T2.age = (SELECT CAST(SUBSTR(T2.Birthday, 1, 4) AS INTEGER) "
+        "- CAST(SUBSTR(SUBSTR(T2.Birthday, 5, 2), 1, 4) AS INTEGER) FROM Patient AS T2)\"}",
+        '{"tool":"final","sql":"SELECT 999"}',
+    ])
+    cleo = Cleo(backend)
+    schema = "CREATE TABLE Patient (ID INTEGER, Birthday TEXT); CREATE TABLE Examination (ID INTEGER, RVVT TEXT);"
+    ans = cleo.ask(
+        "State the ID and age of patient with positive degree of coagulation. "
+        "Hint: age refers to SUBTRACT(year(current_timestamp), year(Birthday));",
+        _thrombosis_db(),
+        schema=schema,
+        max_gather=0,
+        max_repair=1,
+        typed_repair_controller=True,
+    )
+    expected_age = sqlite3.connect(":memory:").execute("SELECT CAST(STRFTIME('%Y', 'now') AS INTEGER) - 2000").fetchone()[0]
+    assert ans.ok
+    assert ans.rows == [[1, expected_age]]
+    assert "T2.age" not in ans.sql
+    assert len(backend.prompts) == 1
+
+
+def test_verifier_repair_context_is_opt_in():
+    generic_backend = FakeBackend([
+        '{"tool":"final","sql":"SELECT nope FROM orders"}',
+        '{"tool":"final","sql":"SELECT region FROM orders"}',
+    ])
+    generic = Cleo(generic_backend)
+    generic.ask("q", _orders_db(), max_gather=0, max_repair=1)
+    assert "REPAIR_CONTEXT" not in generic_backend.prompts[1]
+
+    enriched_backend = FakeBackend([
+        '{"tool":"final","sql":"SELECT nope FROM orders"}',
+        '{"tool":"final","sql":"SELECT region FROM orders"}',
+    ])
+    enriched = Cleo(enriched_backend)
+    enriched.ask("q", _orders_db(), max_gather=0, max_repair=1, verifier_repair_context=True)
+    assert "REPAIR_CONTEXT" in enriched_backend.prompts[1]
+    assert '"missing_column": "nope"' in enriched_backend.prompts[1]
 
 
 def test_self_repair_gives_up_after_budget():
