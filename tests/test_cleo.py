@@ -127,6 +127,28 @@ def test_executor_runs_and_rolls_back():
     assert con.execute("SELECT COUNT(*) FROM orders").fetchone()[0] == 3
 
 
+def test_sqlite_executor_interrupts_long_queries_and_recovers():
+    import cleo.db as db
+
+    con = _orders_db()
+    ex = make_executor(con)
+    old_timeout = db._STMT_TIMEOUT_MS
+    db._STMT_TIMEOUT_MS = 1
+    try:
+        _, _, _, err = run_readonly(
+            ex,
+            "WITH RECURSIVE cnt(x) AS (SELECT 0 UNION ALL SELECT x + 1 FROM cnt WHERE x < 100000000) "
+            "SELECT max(x) FROM cnt",
+            dialect="sqlite",
+        )
+    finally:
+        db._STMT_TIMEOUT_MS = old_timeout
+    assert err and "interrupted" in err.lower()
+
+    cols, rows, trunc, err2 = run_readonly(ex, "SELECT COUNT(*) AS n FROM orders", dialect="sqlite")
+    assert err2 is None and rows == [[3]]
+
+
 def test_executor_refuses_autocommit():
     con = _orders_db(isolation_level=None)  # autocommit -> rollback can't undo, so Cleo must refuse
     try:

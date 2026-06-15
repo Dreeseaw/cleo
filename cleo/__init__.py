@@ -10,4 +10,4 @@ Shell: `cleo "revenue by region" --db warehouse.duckdb`, or `cleo mcp --db ...`.
 from .agent import Answer, Cleo
 
 __all__ = ["Cleo", "Answer"]
-__version__ = "1.4.1"
+__version__ = "1.4.2"
