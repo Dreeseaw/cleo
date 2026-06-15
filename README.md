@@ -70,12 +70,14 @@ cleo "current customers by segment" --db warehouse.duckdb --hardel --k 8 --json
 ## Install
 
 ```bash
-pip install "cleo-sql[hf]"         # current hardel release via transformers (GPU)
-pip install "cleo-sql[hf,mcp]"     # MCP server extras
-pip install "cleo-sql[gguf]"       # legacy/experimental llama-cpp-python backend
+pip install "cleo-sql[hf] @ git+https://github.com/Dreeseaw/cleo.git@master"      # current hardel release via transformers (GPU)
+pip install "cleo-sql[hf,mcp] @ git+https://github.com/Dreeseaw/cleo.git@master"  # MCP server extras
+pip install "cleo-sql[gguf] @ git+https://github.com/Dreeseaw/cleo.git@master"    # legacy/experimental llama-cpp-python backend
 # HF weights download + cache themselves on first use: Cleo.from_hf("dreeseaw/cleo", device="cuda").
 # GGUF loading depends on llama.cpp Python binding support for the model architecture.
 ```
+
+PyPI currently trails this GitHub release; install from GitHub for v1.4 hardel until the next PyPI publish.
 
 Run the tests (no model/GPU needed): `pip install -e ".[test]" && pytest`
 
