@@ -11,6 +11,7 @@ from __future__ import annotations
 import datetime
 import decimal
 import re
+import time
 from typing import Any, Callable
 
 from .contract import is_readonly
@@ -54,6 +55,18 @@ def _quiet(fn) -> None:
         pass
 
 
+def _sqlite_timeout_guard(conn: Any):
+    if type(conn).__module__.split(".")[0] != "sqlite3" or not hasattr(conn, "set_progress_handler"):
+        return lambda: None
+    deadline = time.monotonic() + (_STMT_TIMEOUT_MS / 1000)
+
+    def progress() -> int:
+        return 1 if time.monotonic() > deadline else 0
+
+    conn.set_progress_handler(progress, 10000)
+    return lambda: conn.set_progress_handler(None, 0)
+
+
 def _normalize_cell(v: Any) -> Any:
     if v is None or isinstance(v, (int, str, bool, float)):
         return round(v, 8) if isinstance(v, float) else v
@@ -92,6 +105,7 @@ def make_executor(source: Any) -> Executor:
 
     def execute(sql: str, limit: int = 20) -> tuple[list, list, bool]:
         cur = source.cursor()
+        clear_timeout = _sqlite_timeout_guard(source)
         try:
             _quiet(lambda: cur.execute(f"SET statement_timeout = {_STMT_TIMEOUT_MS}"))  # PG; ignored elsewhere
             wrapped = f"SELECT * FROM ({sql.strip().rstrip(';')}) AS _cleo LIMIT {int(limit) + 1}"
@@ -101,6 +115,7 @@ def make_executor(source: Any) -> Executor:
             rows = [[_normalize_cell(c) for c in row] for row in fetched]
             return columns, rows[:limit], len(rows) > limit
         finally:
+            _quiet(clear_timeout)
             _quiet(source.rollback)  # never commit
             _quiet(cur.close)
 
