@@ -5,6 +5,18 @@ that you point at your own database connections. Cleo's been trained on probing 
 **discover real values, codes, and conventions** deep in the data, **repair broken queries** in-flight, 
 and treat clarity & observability as first-class features.
 
+### The "hardel" thesis
+By marrying the harness & model together with different training, inference, and tooling techniques,
+you can extract more intelligence-per-parameter than traditional model/harness combos. This is particularly
+useful in constrained workflow scenarios, such as SQL-based analytical workflows!
+
+Currently, some features of cleo that are only possible/useful in a unified hardel are:
+- Training on the exact same gather, repair, and answer contract it uses at inference time
+- Searching over candidate queries with live execution evidence, not just model likelihood
+- Co-designing the model contract, SQL safety layer, dialect handling, timeouts, and clarification behavior as one system
+
+## Usage
+
 No server, no pre-staging. Hand it a live DB-API connection and ask:
 
 ```python
