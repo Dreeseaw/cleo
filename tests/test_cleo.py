@@ -107,6 +107,15 @@ def _thrombosis_db():
     return con
 
 
+def _products_db():
+    con = sqlite3.connect(":memory:")
+    con.executescript(
+        "CREATE TABLE products (id INTEGER, current_flag TEXT, sku TEXT);"
+        "INSERT INTO products VALUES (1,'is_current','A'),(2,'is_current','B'),(3,'archived','C');"
+    )
+    return con
+
+
 def test_executor_runs_and_rolls_back():
     con = _orders_db()
     ex = make_executor(con)
@@ -165,9 +174,11 @@ class FakeBackend:
     def __init__(self, scripted):
         self.scripted, self.i = scripted, 0
         self.prompts = []
+        self.kwargs = []
 
-    def generate(self, prompt, max_new_tokens=256):
+    def generate(self, prompt, max_new_tokens=256, **kwargs):
         self.prompts.append(prompt)
+        self.kwargs.append(kwargs)
         out = self.scripted[min(self.i, len(self.scripted) - 1)]
         self.i += 1
         return out
@@ -399,6 +410,27 @@ def test_verifier_repair_context_is_opt_in():
     enriched.ask("q", _orders_db(), max_gather=0, max_repair=1, verifier_repair_context=True)
     assert "REPAIR_CONTEXT" in enriched_backend.prompts[1]
     assert '"missing_column": "nope"' in enriched_backend.prompts[1]
+
+
+def test_hardel_selects_evidence_backed_sample():
+    backend = FakeBackend([
+        '{"tool":"final","sql":"SELECT COUNT(*) FROM products WHERE current_flag=\'current\'"}',
+        '{"tool":"gather","sql":"SELECT DISTINCT current_flag FROM products"}',
+        '{"tool":"final","sql":"SELECT COUNT(*) FROM products WHERE current_flag=\'is_current\'"}',
+    ])
+    cleo = Cleo(backend)
+    ans = cleo.ask_hardel("How many products are current?", _products_db(), k=1, seed=12)
+
+    assert ans.ok
+    assert ans.sql == "SELECT COUNT(*) FROM products WHERE current_flag='is_current'"
+    assert ans.rows == [[2]]
+    assert ans.selector == "evidence_runtime"
+    assert ans.evidence_override
+    assert ans.candidate_id == "sample_1"
+    assert len(ans.candidates) == 2
+    assert any("is_current" in reason for reason in ans.evidence_override_reasons)
+    assert backend.kwargs[0]["sample"] is False
+    assert backend.kwargs[1]["sample"] is True
 
 
 def test_self_repair_gives_up_after_budget():
