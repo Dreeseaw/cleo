@@ -1,7 +1,7 @@
 """A tool-using SQL analyst for your own database connection.
 
     from cleo import Cleo
-    cleo = Cleo.from_gguf()   # downloads and caches the current champion
+    cleo = Cleo.from_hf()   # downloads and caches the current hardel release
     ans = cleo.ask("How many employees are currently in each department?", conn)
     if ans.ok:
         print(ans.sql, ans.rows)
@@ -92,20 +92,47 @@ class Cleo:
                                         n_gpu_layers=n_gpu_layers), **kw)
 
     @classmethod
-    def from_hf(cls, model: str = "dreeseaw/cleo", *, device: str | None = None, **kw) -> "Cleo":
+    def from_hf(cls, model: str = "dreeseaw/cleo", *, device: str | None = None,
+                quantization: str | None = None, **kw) -> "Cleo":
         from .backends import HFBackend
-        return cls(HFBackend(model, device=device), **kw)
+        return cls(HFBackend(model, device=device, quantization=quantization), **kw)
 
-    def ask(self, question: str, conn: Any = None, *, schema: str | None = None,
-            tables: list[str] | None = None, db_schema: str | None = None,
-            max_gather: int | None = None, max_repair: int = 2, execute_final: bool = True,
-            row_limit: int = 1000, dialect: str | None = None,
-            schema_fks: bool = False, schema_samples: int = 0,
-            max_new_tokens: int = 256, enable_gather_many: bool = False,
-            verifier_repair_context: bool = False, typed_repair_controller: bool = False,
-            terminal_contract_sentinel: bool = False,
-            sample: bool = False, temperature: float = 0.0, top_p: float = 0.95,
-            seed: int | None = None) -> Answer:
+    def __call__(self, question: str, conn: Any = None, **kwargs) -> Answer:
+        """Shortcut for `ask()`."""
+        return self.ask(question, conn, **kwargs)
+
+    def ask(self, question: str, conn: Any = None, *, k: int = 4,
+            temperature: float = 0.7, top_p: float = 0.95, seed: int = 6151,
+            return_candidates: bool = True, runtime: bool = True, **kwargs) -> Answer:
+        """Answer with Cleo's hardel runtime.
+
+        By default this runs a greedy candidate plus `k` sampled candidates through
+        the live read-only harness, then selects with execution evidence. Set
+        `runtime=False` or `k=0` to use the single-candidate `ask_once()` path.
+        """
+        if not runtime or k == 0:
+            return self.ask_once(question, conn, **kwargs)
+        return self._ask_runtime(
+            question,
+            conn,
+            k=k,
+            temperature=temperature,
+            top_p=top_p,
+            seed=seed,
+            return_candidates=return_candidates,
+            **kwargs,
+        )
+
+    def ask_once(self, question: str, conn: Any = None, *, schema: str | None = None,
+                 tables: list[str] | None = None, db_schema: str | None = None,
+                 max_gather: int | None = None, max_repair: int = 2, execute_final: bool = True,
+                 row_limit: int = 1000, dialect: str | None = None,
+                 schema_fks: bool = False, schema_samples: int = 0,
+                 max_new_tokens: int = 256, enable_gather_many: bool = False,
+                 verifier_repair_context: bool = False, typed_repair_controller: bool = False,
+                 terminal_contract_sentinel: bool = False,
+                 sample: bool = False, temperature: float = 0.0, top_p: float = 0.95,
+                 seed: int | None = None) -> Answer:
         """Answer `question` against `conn` (a DB-API 2.0 connection or an executor callable).
 
         Cleo may probe the data read-only, then returns final SQL and optionally runs it.
@@ -117,7 +144,7 @@ class Cleo:
         Setup problems raise. Model or DB runtime failures are returned on `Answer.error`.
         """
         if conn is None:
-            raise ValueError("ask() needs a connection or executor as the second argument")
+            raise ValueError("ask_once() needs a connection or executor as the second argument")
         max_gather = self.default_max_gather if max_gather is None else max_gather
         executor = make_executor(conn)
         if dialect is None:
@@ -312,17 +339,17 @@ class Cleo:
             return ans
         return _answer(error="no_answer", gathers=gather_log, raw=last)
 
-    def ask_hardel(self, question: str, conn: Any = None, *, k: int = 8,
-                   temperature: float = 0.7, top_p: float = 0.95, seed: int = 6151,
-                   return_candidates: bool = True, **kwargs) -> Answer:
+    def _ask_runtime(self, question: str, conn: Any = None, *, k: int = 4,
+                     temperature: float = 0.7, top_p: float = 0.95, seed: int = 6151,
+                     return_candidates: bool = True, **kwargs) -> Answer:
         """Run greedy + sampled candidates, then select with product-visible evidence.
 
-        This is the hardel runtime path: it keeps the same model/harness contract as
-        `ask()`, but uses execution traces, result clusters, observed literals, and
-        live DB literal support to pick among candidates without labels.
+        This is Cleo's default hardel path: it uses execution traces, result
+        clusters, observed literals, and live DB literal support to pick among
+        candidates without labels.
         """
         if conn is None:
-            raise ValueError("ask_hardel() needs a connection or executor as the second argument")
+            raise ValueError("ask() needs a connection or executor as the second argument")
         if k < 0:
             raise ValueError("k must be >= 0")
         run_kwargs = dict(kwargs)
@@ -345,7 +372,7 @@ class Cleo:
         answers: list[Answer] = []
         for i in range(k + 1):
             if i == 0:
-                ans = self.ask(
+                ans = self.ask_once(
                     question,
                     conn,
                     sample=False,
@@ -355,7 +382,7 @@ class Cleo:
                     **run_kwargs,
                 )
             else:
-                ans = self.ask(
+                ans = self.ask_once(
                     question,
                     conn,
                     sample=True,
@@ -387,6 +414,21 @@ class Cleo:
         selected.candidate_id = result.summaries[result.selected_index]["candidate_id"]
         selected.candidates = result.summaries if return_candidates else []
         return selected
+
+    def ask_hardel(self, question: str, conn: Any = None, *, k: int = 4,
+                   temperature: float = 0.7, top_p: float = 0.95, seed: int = 6151,
+                   return_candidates: bool = True, **kwargs) -> Answer:
+        """Compatibility alias for `ask()`."""
+        return self._ask_runtime(
+            question,
+            conn,
+            k=k,
+            temperature=temperature,
+            top_p=top_p,
+            seed=seed,
+            return_candidates=return_candidates,
+            **kwargs,
+        )
 
     def _generate(self, prompt: str, max_new_tokens: int, *, sample: bool = False,
                   temperature: float = 0.0, top_p: float = 0.95,
