@@ -189,7 +189,7 @@ def test_full_loop_gather_then_final():
         '{"tool":"gather","sql":"SELECT DISTINCT status FROM orders"}',
         '{"tool":"final","sql":"SELECT region, COUNT(*) AS n FROM orders WHERE status=\'C\' GROUP BY region"}',
     ]))
-    ans = cleo.ask("completed orders by region", _orders_db())
+    ans = cleo.ask_once("completed orders by region", _orders_db())
     assert ans.ok and ans.status == "ok"
     assert sorted(ans.rows) == [["EU", 1], ["US", 1]]
     assert len(ans.gathers) == 1 and "C" in ans.discovered
@@ -200,7 +200,7 @@ def test_full_loop_gather_many_then_final():
         '{"tool":"gather_many","queries":[{"sql":"SELECT DISTINCT status FROM orders"},{"sql":"SELECT DISTINCT region FROM orders"}]}',
         '{"tool":"final","sql":"SELECT region, COUNT(*) AS n FROM orders WHERE status=\'C\' GROUP BY region"}',
     ]))
-    ans = cleo.ask("completed orders by region", _orders_db(), enable_gather_many=True)
+    ans = cleo.ask_once("completed orders by region", _orders_db(), enable_gather_many=True)
     assert ans.ok and sorted(ans.rows) == [["EU", 1], ["US", 1]]
     assert len(ans.gathers) == 2 and {"C", "O", "EU", "US"}.issubset(set(ans.discovered))
 
@@ -210,7 +210,7 @@ def test_gather_many_disabled_by_default():
         '{"tool":"gather_many","queries":[{"sql":"SELECT DISTINCT status FROM orders"}]}',
         '{"tool":"final","sql":"SELECT COUNT(*) FROM orders"}',
     ]))
-    ans = cleo.ask("q", _orders_db())
+    ans = cleo.ask_once("q", _orders_db())
     assert ans.ok and ans.rows == [[3]]
     assert ans.gathers == []
 
@@ -219,7 +219,7 @@ def test_over_budget_gather_is_not_hijacked_as_final():
     # a model that ONLY ever gathers must end in no_answer, never have its probe returned as the answer
     cleo = Cleo(FakeBackend(['{"tool":"gather","sql":"SELECT DISTINCT status FROM orders"}']),
                 default_max_gather=2)
-    ans = cleo.ask("q", _orders_db())
+    ans = cleo.ask_once("q", _orders_db())
     assert ans.status == "error" and ans.error == "no_answer"
     assert ans.sql is None
 
@@ -227,7 +227,7 @@ def test_over_budget_gather_is_not_hijacked_as_final():
 def test_terminal_contract_sentinel_default_off_no_answer_unchanged():
     cleo = Cleo(FakeBackend(['{"tool":"gather","sql":"SELECT DISTINCT status FROM orders"}']),
                 default_max_gather=0)
-    ans = cleo.ask("q", _orders_db(), max_repair=0)
+    ans = cleo.ask_once("q", _orders_db(), max_repair=0)
     assert ans.status == "error"
     assert ans.error == "no_answer"
     assert ans.sql is None
@@ -240,7 +240,7 @@ def test_terminal_contract_sentinel_rescues_no_answer_to_valid_sql():
         '{"tool":"final","sql":"SELECT COUNT(*) FROM orders"}',
     ])
     cleo = Cleo(backend, default_max_gather=0)
-    ans = cleo.ask("q", _orders_db(), max_repair=0, terminal_contract_sentinel=True)
+    ans = cleo.ask_once("q", _orders_db(), max_repair=0, terminal_contract_sentinel=True)
     assert ans.ok
     assert ans.rows == [[3]]
     assert ans.terminal_contract_sentinel_enabled
@@ -252,7 +252,7 @@ def test_terminal_contract_sentinel_rescues_no_answer_to_valid_sql():
 
 def test_terminal_contract_sentinel_does_not_fire_on_normal_final():
     cleo = Cleo(FakeBackend(['{"tool":"final","sql":"SELECT COUNT(*) FROM orders"}']))
-    ans = cleo.ask("q", _orders_db(), max_gather=0, max_repair=0, terminal_contract_sentinel=True)
+    ans = cleo.ask_once("q", _orders_db(), max_gather=0, max_repair=0, terminal_contract_sentinel=True)
     assert ans.ok
     assert ans.rows == [[3]]
     assert ans.terminal_contract_sentinel_enabled
@@ -264,7 +264,7 @@ def test_terminal_contract_sentinel_rejects_post_sentinel_gather_without_executi
         '{"tool":"gather","sql":"SELECT DISTINCT status FROM orders"}',
         '{"tool":"gather","sql":"SELECT DISTINCT region FROM orders"}',
     ]), default_max_gather=0)
-    ans = cleo.ask("q", _orders_db(), max_repair=0, terminal_contract_sentinel=True)
+    ans = cleo.ask_once("q", _orders_db(), max_repair=0, terminal_contract_sentinel=True)
     assert ans.status == "error"
     assert ans.error == "no_answer"
     assert ans.gathers == [("SELECT DISTINCT status FROM orders", None, None)]
@@ -277,7 +277,7 @@ def test_terminal_contract_sentinel_blocks_post_sentinel_unsafe_sql():
         '{"tool":"final","sql":"DELETE FROM orders"}',
     ]), default_max_gather=0)
     con = _orders_db()
-    ans = cleo.ask("q", con, max_repair=0, terminal_contract_sentinel=True)
+    ans = cleo.ask_once("q", con, max_repair=0, terminal_contract_sentinel=True)
     assert ans.status == "error"
     assert ans.error == "no_answer"
     assert ans.sql is None
@@ -287,7 +287,7 @@ def test_terminal_contract_sentinel_blocks_post_sentinel_unsafe_sql():
 
 def test_clarify():
     cleo = Cleo(FakeBackend(['{"tool":"final","clarify":"which metric?"}']))
-    ans = cleo.ask("ambiguous", _orders_db())
+    ans = cleo.ask_once("ambiguous", _orders_db())
     assert ans.status == "clarify" and ans.clarification == "which metric?" and not ans.ok
 
 
@@ -297,7 +297,7 @@ def test_self_repair_recovers_a_failed_final():
         '{"tool":"final","sql":"SELECT nope FROM orders"}',
         '{"tool":"final","sql":"SELECT region FROM orders"}',
     ]))
-    ans = cleo.ask("q", _orders_db(), max_gather=0, max_repair=2)
+    ans = cleo.ask_once("q", _orders_db(), max_gather=0, max_repair=2)
     assert ans.ok and ans.sql == "SELECT region FROM orders", (ans.sql, ans.error)
 
 
@@ -354,7 +354,7 @@ def test_typed_repair_controller_returns_safe_rewrite_without_model_retry():
     ])
     cleo = Cleo(backend)
     schema = "CREATE TABLE Patient (ID INTEGER, Birthday TEXT); CREATE TABLE Examination (ID INTEGER, Symptoms TEXT);"
-    ans = cleo.ask(
+    ans = cleo.ask_once(
         "How many patients have symptoms?",
         _patients_db(),
         schema=schema,
@@ -377,7 +377,7 @@ def test_typed_repair_controller_returns_age_from_birthday_without_model_retry()
     ])
     cleo = Cleo(backend)
     schema = "CREATE TABLE Patient (ID INTEGER, Birthday TEXT); CREATE TABLE Examination (ID INTEGER, RVVT TEXT);"
-    ans = cleo.ask(
+    ans = cleo.ask_once(
         "State the ID and age of patient with positive degree of coagulation. "
         "Hint: age refers to SUBTRACT(year(current_timestamp), year(Birthday));",
         _thrombosis_db(),
@@ -399,7 +399,7 @@ def test_verifier_repair_context_is_opt_in():
         '{"tool":"final","sql":"SELECT region FROM orders"}',
     ])
     generic = Cleo(generic_backend)
-    generic.ask("q", _orders_db(), max_gather=0, max_repair=1)
+    generic.ask_once("q", _orders_db(), max_gather=0, max_repair=1)
     assert "REPAIR_CONTEXT" not in generic_backend.prompts[1]
 
     enriched_backend = FakeBackend([
@@ -407,19 +407,19 @@ def test_verifier_repair_context_is_opt_in():
         '{"tool":"final","sql":"SELECT region FROM orders"}',
     ])
     enriched = Cleo(enriched_backend)
-    enriched.ask("q", _orders_db(), max_gather=0, max_repair=1, verifier_repair_context=True)
+    enriched.ask_once("q", _orders_db(), max_gather=0, max_repair=1, verifier_repair_context=True)
     assert "REPAIR_CONTEXT" in enriched_backend.prompts[1]
     assert '"missing_column": "nope"' in enriched_backend.prompts[1]
 
 
-def test_hardel_selects_evidence_backed_sample():
+def test_callable_hardel_selects_evidence_backed_sample():
     backend = FakeBackend([
         '{"tool":"final","sql":"SELECT COUNT(*) FROM products WHERE current_flag=\'current\'"}',
         '{"tool":"gather","sql":"SELECT DISTINCT current_flag FROM products"}',
         '{"tool":"final","sql":"SELECT COUNT(*) FROM products WHERE current_flag=\'is_current\'"}',
     ])
     cleo = Cleo(backend)
-    ans = cleo.ask_hardel("How many products are current?", _products_db(), k=1, seed=12)
+    ans = cleo("How many products are current?", _products_db(), k=1, seed=12)
 
     assert ans.ok
     assert ans.sql == "SELECT COUNT(*) FROM products WHERE current_flag='is_current'"
@@ -435,7 +435,7 @@ def test_hardel_selects_evidence_backed_sample():
 
 def test_self_repair_gives_up_after_budget():
     cleo = Cleo(FakeBackend(['{"tool":"final","sql":"SELECT nope FROM orders"}']))
-    ans = cleo.ask("q", _orders_db(), max_gather=0, max_repair=1)
+    ans = cleo.ask_once("q", _orders_db(), max_gather=0, max_repair=1)
     assert ans.status == "error" and not ans.ok
 
 
@@ -463,6 +463,55 @@ def test_from_gguf_defaults_to_hub_download():
         assert cleo.backend == ("backend", "/local/m.gguf")
     finally:
         backends.download_gguf, backends.GGUFBackend = orig_dl, orig_be
+
+
+def test_hf_device_auto_prefers_available_accelerators():
+    from cleo.backends import resolve_hf_device
+
+    class Cuda:
+        @staticmethod
+        def is_available():
+            return True
+
+    class Xpu:
+        @staticmethod
+        def is_available():
+            return True
+
+    class Mps:
+        @staticmethod
+        def is_available():
+            return True
+
+    class Backends:
+        mps = Mps()
+
+    class Torch:
+        cuda = Cuda()
+        xpu = Xpu()
+        backends = Backends()
+
+    assert resolve_hf_device(Torch) == "cuda"
+    assert resolve_hf_device(Torch, "mps") == "mps"
+
+    Torch.cuda.is_available = lambda: False
+    assert resolve_hf_device(Torch) == "xpu"
+
+    Torch.xpu.is_available = lambda: False
+    assert resolve_hf_device(Torch) == "mps"
+
+    Torch.backends.mps.is_available = lambda: False
+    assert resolve_hf_device(Torch) == "cpu"
+
+
+def test_hf_int8_requires_cuda_and_bitsandbytes():
+    from cleo.backends import _bnb_quantization_config
+
+    try:
+        _bnb_quantization_config("int8", "cpu")
+        assert False, "int8 should require cuda"
+    except ValueError as exc:
+        assert "requires a CUDA device" in str(exc)
 
 
 def test_cli_connect():
