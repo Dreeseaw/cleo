@@ -48,8 +48,8 @@ rolled-back transaction. It never writes.
 Schema is introspected from the connection. Scope it so the prompt stays focused:
 
 ```python
-cleo.ask("...", conn, tables=["employees", "departments"])   # only these tables
-cleo.ask("...", conn, schema=my_ddl_string)                  # or hand it the DDL yourself
+cleo("...", conn, tables=["employees", "departments"])   # only these tables
+cleo("...", conn, schema=my_ddl_string)                  # or hand it the DDL yourself
 ```
 
 ### CLI
