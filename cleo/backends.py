@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 DEFAULT_REPO = "dreeseaw/cleo"
-DEFAULT_GGUF = "cleo-Q8_0.gguf"   # stable HF alias for the current champion quant
+DEFAULT_GGUF = "cleo-Q8_0.gguf"   # stable HF alias for llama-cpp-python compatible quant
 
 
 def download_gguf(repo_id: str = DEFAULT_REPO, filename: str = DEFAULT_GGUF,

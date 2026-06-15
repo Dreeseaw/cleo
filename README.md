@@ -11,7 +11,7 @@ No server, no pre-staging. Hand it a live DB-API connection and ask:
 from cleo import Cleo
 import psycopg2
 
-cleo = Cleo.from_gguf()   # downloads + caches model (CPU-friendly); or Cleo.from_hf(...)
+cleo = Cleo.from_hf("dreeseaw/cleo", device="cuda")  # current hardel release
 conn = psycopg2.connect("postgresql://...") # your existing connection: Postgres, SQLite, DuckDB, ...
 
 ans = cleo.ask("How many employees are currently in each department?", conn)
@@ -61,7 +61,7 @@ cleo "current customers by segment" --db warehouse.duckdb --hardel --k 8 --json
 
 ### As an MCP tool
 `cleo mcp --db "$DATABASE_URL"` serves a natural-language `query_database` tool
-(`pip install "cleo-sql[gguf,mcp]"`). Claude Code / Claude Desktop config:
+(`pip install "cleo-sql[hf,mcp]"` for the current hardel release). Claude Code / Claude Desktop config:
 
 ```json
 "cleo": { "command": "cleo", "args": ["mcp", "--db", "postgresql://..."] }
@@ -70,18 +70,18 @@ cleo "current customers by segment" --db warehouse.duckdb --hardel --k 8 --json
 ## Install
 
 ```bash
-pip install "cleo-sql[gguf]"       # llama-cpp-python backend (CPU/Mac/CUDA)
-pip install "cleo-sql[hf]"         # transformers backend (GPU)
-pip install "cleo-sql[gguf,mcp]"   # MCP server extras
-# Weights download + cache themselves on first use: Cleo.from_gguf() pulls the current champion
-# Q8_0 GGUF (bf16 parity) from HF.
+pip install "cleo-sql[hf]"         # current hardel release via transformers (GPU)
+pip install "cleo-sql[hf,mcp]"     # MCP server extras
+pip install "cleo-sql[gguf]"       # legacy/experimental llama-cpp-python backend
+# HF weights download + cache themselves on first use: Cleo.from_hf("dreeseaw/cleo", device="cuda").
+# GGUF loading depends on llama.cpp Python binding support for the model architecture.
 ```
 
 Run the tests (no model/GPU needed): `pip install -e ".[test]" && pytest`
 
 ## API
-- `Cleo.from_gguf(path=None, *, n_ctx=4096, n_threads=8, n_gpu_layers=0)`: no path downloads/caches the current champion
-- `Cleo.from_hf(model="dreeseaw/cleo", *, device=None)`
+- `Cleo.from_hf(model="dreeseaw/cleo", *, device=None)`: current HF hardel release; use `device="cuda"` for Qwen3.5.
+- `Cleo.from_gguf(path=None, *, n_ctx=4096, n_threads=8, n_gpu_layers=0)`: llama-cpp-python backend when the local binding supports the target GGUF.
 - `cleo.ask(question, conn, *, schema=None, tables=None, max_gather=3, max_repair=2, execute_final=True, row_limit=1000, dialect=None, schema_fks=False, schema_samples=0) -> Answer`: auto-detects dialect, transpiles from DuckDB SQL, and retries failed finals up to `max_repair`.
 - `cleo.ask_hardel(question, conn, *, k=8, temperature=0.7, top_p=0.95, seed=6151, **ask_kwargs) -> Answer`: runs pass@N through the live harness and selects with product-visible evidence.
 - `Answer(sql, rows, columns, clarification, gathers, discovered, error, selector, evidence_override, evidence_override_reasons)`: truthy when answered.
