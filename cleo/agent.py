@@ -19,6 +19,7 @@ from typing import Any
 
 from . import contract
 from .db import MODEL_DIALECT, detect_dialect, introspect_schema, make_executor, run_readonly
+from .evidence import select_candidate
 
 
 @dataclass
@@ -41,6 +42,11 @@ class Answer:
     post_sentinel_generation_count: int = 0
     post_sentinel_gather_rejected: bool = False
     post_sentinel_sql_blocked: bool = False
+    selector: str | None = None
+    candidate_id: str | None = None
+    evidence_override: bool = False
+    evidence_override_reasons: list[str] = field(default_factory=list)
+    candidates: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
@@ -97,7 +103,9 @@ class Cleo:
             schema_fks: bool = False, schema_samples: int = 0,
             max_new_tokens: int = 256, enable_gather_many: bool = False,
             verifier_repair_context: bool = False, typed_repair_controller: bool = False,
-            terminal_contract_sentinel: bool = False) -> Answer:
+            terminal_contract_sentinel: bool = False,
+            sample: bool = False, temperature: float = 0.0, top_p: float = 0.95,
+            seed: int | None = None) -> Answer:
         """Answer `question` against `conn` (a DB-API 2.0 connection or an executor callable).
 
         Cleo may probe the data read-only, then returns final SQL and optionally runs it.
@@ -165,7 +173,15 @@ class Cleo:
                                             steps_left=max_steps - step,
                                             enable_gather_many=enable_gather_many)
             step += 1
-            last = self._generate(prompt, max_new_tokens)
+            gen_seed = None if seed is None else seed + step
+            last = self._generate(
+                prompt,
+                max_new_tokens,
+                sample=sample,
+                temperature=temperature,
+                top_p=top_p,
+                seed=gen_seed,
+            )
             act = contract.normalize_action(contract.parse_action(last))
             post_sentinel = sentinel_fired and post_sentinel_generation_count == 0
             if post_sentinel:
@@ -296,6 +312,94 @@ class Cleo:
             return ans
         return _answer(error="no_answer", gathers=gather_log, raw=last)
 
-    def _generate(self, prompt: str, max_new_tokens: int) -> str:
+    def ask_hardel(self, question: str, conn: Any = None, *, k: int = 8,
+                   temperature: float = 0.7, top_p: float = 0.95, seed: int = 6151,
+                   return_candidates: bool = True, **kwargs) -> Answer:
+        """Run greedy + sampled candidates, then select with product-visible evidence.
+
+        This is the hardel runtime path: it keeps the same model/harness contract as
+        `ask()`, but uses execution traces, result clusters, observed literals, and
+        live DB literal support to pick among candidates without labels.
+        """
+        if conn is None:
+            raise ValueError("ask_hardel() needs a connection or executor as the second argument")
+        if k < 0:
+            raise ValueError("k must be >= 0")
+        run_kwargs = dict(kwargs)
+        run_kwargs.setdefault("verifier_repair_context", True)
+        run_kwargs.setdefault("typed_repair_controller", True)
+        run_kwargs.setdefault("terminal_contract_sentinel", True)
+        if run_kwargs.get("schema") is None and hasattr(conn, "cursor"):
+            run_kwargs["schema"] = introspect_schema(
+                conn,
+                tables=run_kwargs.get("tables"),
+                db_schema=run_kwargs.get("db_schema"),
+                fks=run_kwargs.get("schema_fks", False),
+                samples=run_kwargs.get("schema_samples", 0),
+            )
+        dialect = run_kwargs.get("dialect")
+        if dialect is None:
+            dialect = detect_dialect(conn) if hasattr(conn, "cursor") else MODEL_DIALECT
+            run_kwargs["dialect"] = dialect
+
+        answers: list[Answer] = []
+        for i in range(k + 1):
+            if i == 0:
+                ans = self.ask(
+                    question,
+                    conn,
+                    sample=False,
+                    temperature=0.0,
+                    top_p=top_p,
+                    seed=None,
+                    **run_kwargs,
+                )
+            else:
+                ans = self.ask(
+                    question,
+                    conn,
+                    sample=True,
+                    temperature=temperature,
+                    top_p=top_p,
+                    seed=seed + i * 1009,
+                    **run_kwargs,
+                )
+            ans.candidate_id = "greedy" if i == 0 else f"sample_{i}"
+            answers.append(ans)
+
+        candidate_rows = [
+            {
+                "candidate_id": ans.candidate_id,
+                "sample_index": i,
+                "sql": ans.sql,
+                "rows": ans.rows,
+                "columns": ans.columns,
+                "error": ans.error,
+                "gathers": ans.gathers,
+            }
+            for i, ans in enumerate(answers)
+        ]
+        result = select_candidate(candidate_rows, conn=conn if hasattr(conn, "cursor") else None, dialect=dialect)
+        selected = answers[result.selected_index]
+        selected.selector = "evidence_runtime"
+        selected.evidence_override = result.override
+        selected.evidence_override_reasons = result.override_reasons
+        selected.candidate_id = result.summaries[result.selected_index]["candidate_id"]
+        selected.candidates = result.summaries if return_candidates else []
+        return selected
+
+    def _generate(self, prompt: str, max_new_tokens: int, *, sample: bool = False,
+                  temperature: float = 0.0, top_p: float = 0.95,
+                  seed: int | None = None) -> str:
         with self._lock:
-            return self.backend.generate(prompt, max_new_tokens=max_new_tokens)
+            try:
+                return self.backend.generate(
+                    prompt,
+                    max_new_tokens=max_new_tokens,
+                    sample=sample,
+                    temperature=temperature,
+                    top_p=top_p,
+                    seed=seed,
+                )
+            except TypeError:
+                return self.backend.generate(prompt, max_new_tokens=max_new_tokens)

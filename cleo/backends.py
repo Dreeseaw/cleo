@@ -20,8 +20,17 @@ class GGUFBackend:
         self.llm = Llama(model_path=model_path, n_ctx=n_ctx, n_threads=n_threads,
                          n_gpu_layers=n_gpu_layers, verbose=False)
 
-    def generate(self, prompt: str, max_new_tokens: int = 256) -> str:
-        out = self.llm(prompt, max_tokens=max_new_tokens, temperature=0.0, stop=["\n\n\n"])
+    def generate(self, prompt: str, max_new_tokens: int = 256, *, sample: bool = False,
+                 temperature: float = 0.0, top_p: float = 0.95, seed: int | None = None) -> str:
+        kwargs = {
+            "max_tokens": max_new_tokens,
+            "temperature": float(temperature if sample else 0.0),
+            "top_p": float(top_p),
+            "stop": ["\n\n\n"],
+        }
+        if seed is not None:
+            kwargs["seed"] = int(seed)
+        out = self.llm(prompt, **kwargs)
         return out["choices"][0]["text"]
 
 
@@ -39,9 +48,20 @@ class HFBackend:
         self.model = AutoModelForCausalLM.from_pretrained(
             model, torch_dtype=torch.bfloat16, trust_remote_code=True).to(self.device).eval()
 
-    def generate(self, prompt: str, max_new_tokens: int = 256) -> str:
+    def generate(self, prompt: str, max_new_tokens: int = 256, *, sample: bool = False,
+                 temperature: float = 0.0, top_p: float = 0.95, seed: int | None = None) -> str:
         enc = self.tok(prompt, return_tensors="pt").to(self.device)
+        if seed is not None:
+            self._torch.manual_seed(int(seed))
+            if self.device == "cuda":
+                self._torch.cuda.manual_seed_all(int(seed))
+        gen_kwargs = {
+            "do_sample": bool(sample),
+            "max_new_tokens": max_new_tokens,
+            "pad_token_id": self.tok.pad_token_id,
+        }
+        if sample:
+            gen_kwargs.update({"temperature": float(temperature), "top_p": float(top_p)})
         with self._torch.no_grad():
-            out = self.model.generate(**enc, do_sample=False, max_new_tokens=max_new_tokens,
-                                      pad_token_id=self.tok.pad_token_id)
+            out = self.model.generate(**enc, **gen_kwargs)
         return self.tok.decode(out[0][enc["input_ids"].shape[1]:], skip_special_tokens=True)
